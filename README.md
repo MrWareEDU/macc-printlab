@@ -13,16 +13,7 @@ A full-featured 3D print job management system for teachers and lab admins at MA
 - **Saved templates** — reuse common print requests
 - **Build volume warnings** — alerts if STL exceeds Bambu X1C limits
 
-## Admin Accounts
 
-| Name | Email | Temp Password |
-|------|-------|---------------|
-| Robert W. | robertw@macc.nsw.edu.au | `Orbit#4821` |
-| Thomas Rodriguez | thomas.rodriguez@macc.nsw.edu.au | `Prism#7364` |
-
-Both accounts will require a password reset on first login.
-
----
 
 ## Local Development
 
