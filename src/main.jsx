@@ -2,9 +2,7 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import PrintPortal from './PrintPortal.jsx'
 
-// ── Storage shim ──────────────────────────────────────────────────────────────
-// The app was built for Claude's artifact sandbox which exposes window.storage.
-// Outside that environment we provide a localStorage-backed drop-in replacement.
+
 if (!window.storage) {
   window.storage = {
     get: async (key) => {
