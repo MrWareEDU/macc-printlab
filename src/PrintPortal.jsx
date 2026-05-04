@@ -87,8 +87,29 @@ function checkStatusChanges(requests, email) {
   });
   try { localStorage.setItem(NOTIF_STATUS_KEY, JSON.stringify(next)); } catch(e) {}
 }
-async function loadReqs() { return (await sget(RK)) || []; }
-async function saveReqs(r) { await sset(RK, r); }
+async function loadReqs() {
+  var reqs = (await sget(RK)) || [];
+  // Merge separately-stored file data back in
+  await Promise.all(reqs.map(async function(r, i) {
+    var fd = await sget("pl_fd_" + r.id);
+    if (fd) reqs[i] = Object.assign({}, r, { fileData: fd });
+  }));
+  return reqs;
+}
+async function saveReqs(reqs) {
+  // Save each file separately so the main list stays small (prevents UI freeze)
+  reqs.forEach(function(r) {
+    if (r.fileData) sset("pl_fd_" + r.id, r.fileData);
+  });
+  // Strip fileData from the main list before JSON.stringify
+  var stripped = reqs.map(function(r) {
+    if (!r.fileData) return r;
+    var s = Object.assign({}, r);
+    delete s.fileData;
+    return s;
+  });
+  await sset(RK, stripped);
+}
 async function loadInv() { return (await sget(IK)) || buildDefaultInv(); }
 async function saveInv(i) { await sset(IK, i); }
 async function loadSettings() { return (await sget(SK)) || { printerIp: "", printerCode: "", printerModel: "Bambu X1C", darkMode: true }; }
@@ -669,6 +690,33 @@ function NavBtns({ onBack, onNext, disabled, label }) {
     </button>
   </div>;
 }
+// ─── Confetti ─────────────────────────────────────────────────────────────────
+function Confetti() {
+  var COLORS = ["#f97316","#a855f7","#3b82f6","#22c55e","#f59e0b","#ec4899","#06b6d4"];
+  var pieces = [];
+  for (var i = 0; i < 60; i++) {
+    var style = {
+      position:"fixed",
+      left: Math.random()*100+"%",
+      top: -10,
+      width: 8+Math.random()*6,
+      height: 8+Math.random()*6,
+      background: COLORS[Math.floor(Math.random()*COLORS.length)],
+      borderRadius: Math.random()>0.5?"50%":"2px",
+      opacity: 0.9,
+      pointerEvents:"none",
+      zIndex:9999,
+      animation:"cf-fall "+(1.5+Math.random()*2)+"s ease-in "+Math.random()*1.5+"s forwards"
+    };
+    pieces.push(<div key={i} style={style}/>);
+  }
+  return <div aria-hidden="true">
+    <style>{`@keyframes cf-fall{0%{transform:translateY(0) rotate(0deg);opacity:.9}100%{transform:translateY(105vh) rotate(720deg);opacity:0}}`}</style>
+    {pieces}
+  </div>;
+}
+
+// ─── Step Bar ─────────────────────────────────────────────────────────────────
 function StepBar({ step, steps }) {
   return <div style={{ display:"flex", alignItems:"center", marginBottom:26 }}>
     {steps.map(function(s,i) {
