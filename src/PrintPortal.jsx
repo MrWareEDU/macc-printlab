@@ -100,12 +100,17 @@ async function saveReqs(reqs) {
   // Save each file separately so the main list stays small (prevents UI freeze)
   reqs.forEach(function(r) {
     if (r.fileData) sset("pl_fd_" + r.id, r.fileData);
+    if (r.extraFiles) r.extraFiles.forEach(function(ef, i) {
+      if (ef.fileData) sset("pl_fd_" + r.id + "_" + i, ef.fileData);
+    });
   });
   // Strip fileData from the main list before JSON.stringify
   var stripped = reqs.map(function(r) {
-    if (!r.fileData) return r;
     var s = Object.assign({}, r);
     delete s.fileData;
+    if (s.extraFiles) s.extraFiles = s.extraFiles.map(function(ef) {
+      var ef2 = Object.assign({}, ef); delete ef2.fileData; return ef2;
+    });
     return s;
   });
   await sset(RK, stripped);
@@ -124,6 +129,27 @@ var SPOOL_G = 1000;
 var LOW_G = 250;
 var CRIT_G = 100;
 var DENSITIES = { PLA: 1.24, PETG: 1.27, ABS: 1.05, TPU: 1.21 };
+
+
+// ─── hexToRgb helper for KLA button tints ────────────────────────────────────
+function hexToRgb(hex) {
+  var r = parseInt(hex.slice(1,3),16);
+  var g = parseInt(hex.slice(3,5),16);
+  var b = parseInt(hex.slice(5,7),16);
+  return r+","+g+","+b;
+}
+// ─── NSW NESA Key Learning Areas ─────────────────────────────────────────────
+var KLA_OPTIONS = [
+  { id:"eng",   label:"English",              emoji:"📖", color:"#3b82f6" },
+  { id:"maths", label:"Mathematics",          emoji:"📐", color:"#8b5cf6" },
+  { id:"sci",   label:"Science",              emoji:"🔬", color:"#06b6d4" },
+  { id:"hsie",  label:"HSIE",                emoji:"🌏", color:"#10b981" },
+  { id:"tas",   label:"TAS",                 emoji:"⚙️",  color:"#f97316" },
+  { id:"pdhpe", label:"PDHPE",               emoji:"⚽", color:"#22c55e" },
+  { id:"capa",  label:"Creative Arts",        emoji:"🎨", color:"#ec4899" },
+  { id:"lang",  label:"Languages",            emoji:"💬", color:"#f59e0b" },
+  { id:"other", label:"Other / Cross-Strand", emoji:"📌", color:"#94a3b8" }
+];
 var DEPARTMENTS = ["TAS", "Mathematics", "English", "Science", "CAPA", "HSIE", "PDHPE", "Modern Languages", "Other"];
 var STATUSES = ["Pending", "Queued", "Printing", "Done", "Failed", "Cancelled"];
 var SC = { Pending: "#94a3b8", Queued: "#f59e0b", Printing: "#3b82f6", Done: "#22c55e", Failed: "#ef4444", Cancelled: "#64748b" };
@@ -2550,7 +2576,7 @@ export default function PrintPortal() {
   var satpl=useState(false); var saveAsTpl=satpl[0],setSaveAsTpl=satpl[1];
   var sstep=useState(0); var step=sstep[0],setStep=sstep[1];
   var sform=useState(function(){
-    var defaults={teacherName:"",email:"",department:"",projectName:"",purpose:"",quantity:1,dueDate:"",material:"PLA",color:"",filamentId:"",notes:"",sourceUrl:"",priority:false};
+    var defaults={teacherName:"",email:"",department:"",projectName:"",purpose:"",quantity:1,dueDate:"",material:"PLA",color:"",filamentId:"",notes:"",sourceUrl:"",priority:false,kla:"",syllabusOutcome:""};
     try { var saved=JSON.parse(localStorage.getItem(UK)||"null"); if(saved)return Object.assign({},defaults,{teacherName:saved.teacherName||"",email:saved.email||"",department:saved.department||""}); } catch(e) {}
     return defaults;
   }); 
@@ -2566,11 +2592,14 @@ export default function PrintPortal() {
   var scstart=useState(false); var confStart=scstart[0],setConfStart=scstart[1];
   var snote=useState(""); var adminNote=snote[0],setAdminNote=snote[1];
   var surl=useState(""); var urlInfo=surl[0],setUrlInfo=surl[1];
+  var susd=useState(null); var urlScrapedData=susd[0],setUrlScrapedData=susd[1];
+  var suscr=useState(false); var urlScraping=suscr[0],setUrlScraping=suscr[1];
   var sreadyDate=useState(null); var submittedReadyDate=sreadyDate[0],setSubmittedReadyDate=sreadyDate[1];
   var smenu=useState(false); var mobileMenu=smenu[0],setMobileMenu=smenu[1];
   var fileRef=useRef(null),dragRef=useRef(null);
   var sfiledata=useState(null); var stlFileData=sfiledata[0],setStlFileData=sfiledata[1];
   var s3mf=useState(null); var stl3MFMeta=s3mf[0],setStl3MFMeta=s3mf[1];
+  var sextra=useState([]); var extraFiles=sextra[0],setExtraFiles=sextra[1];
   var ssearch=useState(""); var searchQuery=ssearch[0],setSearchQuery=ssearch[1];
   var ssel=useState({}); var selected=ssel[0],setSelected=ssel[1];
   var selCount=Object.keys(selected).filter(function(k){return selected[k];}).length;
@@ -2626,16 +2655,234 @@ export default function PrintPortal() {
       .split(" ").map(function(w){return w.length>0?w.charAt(0).toUpperCase()+w.slice(1).toLowerCase():w;}).join(" ")
       .trim();
   }
+
+// ─── URL Scraper ─────────────────────────────────────────────────────────────
+// Uses allorigins CORS proxy to fetch model pages and extract print data
+
+var CORS_PROXY = "https://api.allorigins.win/get?url=";
+
+function normaliseMaterial(str) {
+  if (!str) return null;
+  var s = str.toLowerCase();
+  if (s.indexOf("petg") >= 0) return "PETG";
+  if (s.indexOf("abs") >= 0) return "ABS";
+  if (s.indexOf("tpu") >= 0 || s.indexOf("flex") >= 0) return "TPU";
+  if (s.indexOf("asa") >= 0) return "ABS";
+  if (s.indexOf("pla") >= 0) return "PLA";
+  return null;
+}
+
+function normaliseTime(str) {
+  if (!str) return null;
+  var s = str.toLowerCase().replace(/,/g, "");
+  var h = 0, m = 0;
+  var hM = s.match(/([0-9]+)\s*h/); if (hM) h = parseInt(hM[1]);
+  var mM = s.match(/([0-9]+)\s*m/); if (mM) m = parseInt(mM[1]);
+  if (h === 0 && m === 0) { var n = parseFloat(s); if (!isNaN(n)) h = n; }
+  return (h > 0 || m > 0) ? { h: h, m: m, label: (h > 0 ? h + "h " : "") + (m > 0 ? m + "m" : "") } : null;
+}
+
+function parseHTMLMeta(html) {
+  var result = { name: null, description: null, thumbnail: null, tags: [] };
+  // Open Graph
+  var ogTitle = html.match(/<meta[^>]+property="og:title"[^>]+content="([^"]+)"/i);
+  if (!ogTitle) ogTitle = html.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:title"/i);
+  if (ogTitle) result.name = ogTitle[1].trim();
+
+  var ogDesc = html.match(/<meta[^>]+property="og:description"[^>]+content="([^"]+)"/i);
+  if (!ogDesc) ogDesc = html.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:description"/i);
+  if (ogDesc) result.description = ogDesc[1].trim().replace(/&amp;/g,"&").replace(/&quot;/g,'"').replace(/&#39;/g,"'");
+
+  var ogImg = html.match(/<meta[^>]+property="og:image"[^>]+content="([^"]+)"/i);
+  if (!ogImg) ogImg = html.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:image"/i);
+  if (ogImg) result.thumbnail = ogImg[1];
+
+  // Twitter card fallbacks
+  if (!result.name) { var tw = html.match(/<meta[^>]+name="twitter:title"[^>]+content="([^"]+)"/i); if (tw) result.name = tw[1].trim(); }
+  if (!result.description) { var tw = html.match(/<meta[^>]+name="twitter:description"[^>]+content="([^"]+)"/i); if (tw) result.description = tw[1].trim(); }
+  return result;
+}
+
+function parseJSONLD(html) {
+  var result = {};
+  var matches = html.match(/<script[^>]+type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi);
+  if (!matches) return result;
+  for (var i = 0; i < matches.length; i++) {
+    try {
+      var json = JSON.parse(matches[i].replace(/<script[^>]*>/i,"").replace(/<\/script>/i,"").trim());
+      if (json.name) result.name = result.name || json.name;
+      if (json.description) result.description = result.description || json.description.substring(0,500);
+      if (json.image) result.thumbnail = result.thumbnail || (typeof json.image === "string" ? json.image : (json.image[0] || null));
+      if (json.keywords) result.tags = json.keywords.split(",").map(function(t){return t.trim();}).slice(0,8);
+    } catch(e) {}
+  }
+  return result;
+}
+
+function parsePrintablesHTML(html) {
+  var result = { material: null, layerHeight: null, infill: null, supports: null, printTime: null, printerProfile: null };
+  // Printables embeds __NUXT_DATA__ or similar JSON blobs
+  var nuxt = html.match(/__NUXT_DATA__[^=]*=([\s\S]*?);<\/script>/i);
+  if (!nuxt) nuxt = html.match(/window\.__nuxt__[^=]*=([\s\S]*?);<\/script>/i);
+  if (nuxt) {
+    try {
+      var data = JSON.parse(nuxt[1]);
+      var str = JSON.stringify(data);
+      var mM = str.match(/"material":"([^"]+)"/i); if (mM) result.material = normaliseMaterial(mM[1]);
+      var lM = str.match(/"layer_height":([0-9.]+)/i); if (lM) result.layerHeight = parseFloat(lM[1]);
+      var iM = str.match(/"infill":([0-9]+)/i); if (iM) result.infill = parseInt(iM[1]);
+      var sM = str.match(/"supports":(true|false)/i); if (sM) result.supports = sM[1] === "true";
+      var tM = str.match(/"print_time":"([^"]+)"/i); if (tM) result.printTime = normaliseTime(tM[1]);
+    } catch(e) {}
+  }
+  // Fallback: scan visible text patterns
+  var matM = html.match(/(?:Material|Filament)[^a-zA-Z]*:?\s*<[^>]*>([^<]{2,30})/i);
+  if (!result.material && matM) result.material = normaliseMaterial(matM[1]);
+  var lhM = html.match(/(?:Layer height|Layer Height)[^0-9]*([0-9.]+)\s*mm/i);
+  if (!result.layerHeight && lhM) result.layerHeight = parseFloat(lhM[1]);
+  var infM = html.match(/(?:Infill|Fill)[^0-9]*([0-9]+)\s*%/i);
+  if (!result.infill && infM) result.infill = parseInt(infM[1]);
+  var supM = html.match(/(?:Supports?|Support structures?)[^:]*:[^a-zA-Z]*([YesNo]{2,3})/i);
+  if (result.supports === null && supM) result.supports = supM[1].toLowerCase() === "yes";
+  var ptM = html.match(/(?:Print time|Printing time)[^0-9]*([0-9]+h\s*[0-9]*m?|[0-9]+\s*hours?[^<]{0,10})/i);
+  if (!result.printTime && ptM) result.printTime = normaliseTime(ptM[1]);
+  return result;
+}
+
+function parseMakerWorldHTML(html) {
+  var result = { material: null, layerHeight: null, infill: null, supports: null, printTime: null, printerProfile: null };
+  // MakerWorld embeds model data in a __NEXT_DATA__ script
+  var nd = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/i);
+  if (nd) {
+    try {
+      var data = JSON.parse(nd[1]);
+      var str = JSON.stringify(data);
+      var mM = str.match(/"filament_type":"([^"]+)"/i); if (mM) result.material = normaliseMaterial(mM[1]);
+      var lM = str.match(/"layer_height":([0-9.]+)/i); if (lM) result.layerHeight = parseFloat(lM[1]);
+      var iM = str.match(/"sparse_infill_density":([0-9]+)/i); if (iM) result.infill = parseInt(iM[1]);
+      var sM = str.match(/"support_type":"([^"]+)"/i); if (sM) result.supports = sM[1] !== "none" && sM[1] !== "";
+      var tM = str.match(/"print_time":([0-9]+)/i); if (tM) { var mins=parseInt(tM[1]); result.printTime = normaliseTime(Math.floor(mins/60)+"h "+( mins%60)+"m"); }
+      var pM = str.match(/"machine_name":"([^"]+)"/i); if (pM) result.printerProfile = pM[1];
+    } catch(e) {}
+  }
+  // Fallback text patterns
+  var matM = html.match(/Filament[^:]*:[^<]*<[^>]*>([^<]{2,20})/i);
+  if (!result.material && matM) result.material = normaliseMaterial(matM[1]);
+  return result;
+}
+
+function parseThingiHTML(html) {
+  var result = { material: null, layerHeight: null, infill: null, supports: null, printTime: null };
+  var matM = html.match(/(?:Material|Filament)[^a-zA-Z0-9]{1,30}([A-Z]{2,6})(?:\b|\s)/);
+  if (matM) result.material = normaliseMaterial(matM[1]);
+  var lhM = html.match(/(?:Layer Height|layer height|layer_height)[^0-9]*([0-9.]+)\s*mm/i);
+  if (lhM) result.layerHeight = parseFloat(lhM[1]);
+  var infM = html.match(/(?:Infill|infill)[^0-9]*([0-9]+)\s*%/i);
+  if (infM) result.infill = parseInt(infM[1]);
+  var supM = html.match(/(?:Support|support)[^a-zA-Z]*:?\s*(yes|no|required|none)/i);
+  if (supM) result.supports = ["yes","required"].indexOf(supM[1].toLowerCase()) >= 0;
+  var ptM = html.match(/(?:Print Time|print time)[^0-9]*([0-9]+\s*h[^<]{0,15})/i);
+  if (ptM) result.printTime = normaliseTime(ptM[1]);
+  return result;
+}
+
+async function scrapeModelUrl(url) {
+  if (!url || url.length < 10) return null;
+  var platform = null;
+  if (url.indexOf("thingiverse.com") >= 0) platform = "Thingiverse";
+  else if (url.indexOf("printables.com") >= 0) platform = "Printables";
+  else if (url.indexOf("makerworld.com") >= 0) platform = "MakerWorld";
+  else if (url.indexOf("myminifactory.com") >= 0) platform = "MyMiniFactory";
+  else if (url.indexOf("cults3d.com") >= 0) platform = "Cults3D";
+  else if (url.indexOf("tinkercad.com") >= 0) platform = "Tinkercad";
+  else if (url.indexOf("thangs.com") >= 0) platform = "Thangs";
+  if (!platform) return null;
+
+  try {
+    var resp = await fetch(CORS_PROXY + encodeURIComponent(url), { signal: AbortSignal.timeout(8000) });
+    if (!resp.ok) return null;
+    var data = await resp.json();
+    var html = data.contents || "";
+    if (!html) return null;
+
+    var meta = parseHTMLMeta(html);
+    var jsonld = parseJSONLD(html);
+    var settings = {};
+    if (platform === "Printables") settings = parsePrintablesHTML(html);
+    else if (platform === "MakerWorld") settings = parseMakerWorldHTML(html);
+    else if (platform === "Thingiverse") settings = parseThingiHTML(html);
+    else {
+      // Generic fallback for all other platforms
+      settings = parsePrintablesHTML(html);
+    }
+
+    return {
+      platform: platform,
+      name: jsonld.name || meta.name || null,
+      description: jsonld.description || meta.description || null,
+      thumbnail: jsonld.thumbnail || meta.thumbnail || null,
+      tags: jsonld.tags || [],
+      material: settings.material,
+      layerHeight: settings.layerHeight,
+      infill: settings.infill,
+      supports: settings.supports,
+      printTime: settings.printTime,
+      printerProfile: settings.printerProfile || null
+    };
+  } catch(e) { return null; }
+}
+
   function detectPlatform(url){if(!url)return null;if(url.indexOf("thingiverse.com")>=0)return"Thingiverse";if(url.indexOf("printables.com")>=0)return"Printables";if(url.indexOf("myminifactory.com")>=0)return"MyMiniFactory";if(url.indexOf("cults3d.com")>=0)return"Cults3D";if(url.indexOf("thangs.com")>=0)return"Thangs";if(url.indexOf("tinkercad.com")>=0)return"Tinkercad";if(url.indexOf("makerworld.com")>=0)return"MakerWorld";return null;}
   function extractNameFromUrl(url){try{var u=new URL(url);var parts=u.pathname.split("/").filter(function(p){return p.length>2;});var last=parts[parts.length-1]||"";last=last.replace(/^[a-z0-9]+[:\-]?[0-9]+$/i,"").replace(/^[0-9]+$/,"").replace(/[:\-_]+$/,"");if(!last&&parts.length>1)last=parts[parts.length-2]||"";return cleanName(last);}catch(e){return"";}}
 
   function handleUrlInput(url){
     setForm(function(f){return Object.assign({},f,{sourceUrl:url});});
-    if(!url||url.length<10){setUrlInfo("");return;}
+    if(!url||url.length<10){setUrlInfo("");setUrlScrapedData(null);return;}
     var platform=detectPlatform(url);var name=extractNameFromUrl(url);
     setUrlInfo("Found on "+(platform||"Web")+(name?" — "+name:""));
     if(name){setForm(function(f){return Object.assign({},f,{sourceUrl:url,projectName:f.projectName?f.projectName:name});});}
+    if(!platform){setUrlScrapedData(null);return;}
+    // Async scrape
+    setUrlScraping(true);setUrlScrapedData(null);
+    scrapeModelUrl(url).then(function(data){
+      setUrlScraping(false);
+      if(!data){return;}
+      setUrlScrapedData(data);
+      // Auto-fill name if not already set
+      if(data.name){setForm(function(f){return Object.assign({},f,{projectName:f.projectName?f.projectName:data.name});});}
+      // Auto-fill description/purpose
+      if(data.description){setForm(function(f){return Object.assign({},f,{purpose:f.purpose?f.purpose:data.description.substring(0,200)});});}
+      // Auto-fill material if it maps to one we support and user hasn't chosen
+      if(data.material){setForm(function(f){return Object.assign({},f,{material:f.material==="PLA"&&!f.color?data.material:f.material});});}
+    }).catch(function(){setUrlScraping(false);});
   }
+
+
+  var handleAddExtraFile=useCallback(async function(file){
+    if(!file)return;
+    var nameL=file.name.toLowerCase();
+    var isSTL=nameL.endsWith(".stl");
+    var is3mf=nameL.endsWith(".3mf");
+    if(!isSTL&&!is3mf){return;}
+    var entry={file:file,stats:null,fileData:null,is3mf:is3mf,meta3mf:null,error:"",parsing:true,id:"ef-"+Date.now()};
+    setExtraFiles(function(prev){return prev.concat([entry]);});
+    var buf=await file.arrayBuffer();
+    var stats=null,error="",meta3mf=null;
+    if(is3mf){
+      if(is3MF(buf)){meta3mf=extract3MFMeta(buf);}
+      else{error="Invalid .3mf file.";}
+    } else {
+      try{stats=parseSTL(buf);if(!stats)error="Could not parse STL.";}
+      catch(e){error="Could not read file: "+e.message;}
+    }
+    var fileData=null;
+    if(file.size<=MAX_STORE_BYTES){fileData=await fileToBase64(file);}
+    setExtraFiles(function(prev){return prev.map(function(ef){
+      return ef.id===entry.id?Object.assign({},ef,{stats:stats,fileData:fileData,meta3mf:meta3mf,error:error,parsing:false}):ef;
+    });});
+  },[]);
+
+  function removeExtraFile(id){setExtraFiles(function(prev){return prev.filter(function(ef){return ef.id!==id;});});}
 
   var handleFile=useCallback(async function(file){
     if(!file)return;
@@ -2681,7 +2928,10 @@ export default function PrintPortal() {
     var statsClean=null;
     if(stlStats){statsClean=Object.assign({},stlStats);delete statsClean.rawVertices;}
     var readyDate=estimateReadyDate(requests,{stlStats:statsClean,quantity:form.quantity});
-    var req=Object.assign({},form,{id:Date.now()+"",fileName:stlFile.name,fileSize:stlFile.size,stlStats:statsClean,fileData:stlFileData,submittedAt:new Date().toISOString(),status:"Pending",log:[],estimatedReadyDate:readyDate.toISOString(),is3mf:!!stl3MFMeta,meta3mf:stl3MFMeta});
+    var extraFilesClean=extraFiles.map(function(ef){var sc=ef.stats?Object.assign({},ef.stats):null;if(sc)delete sc.rawVertices;return{name:ef.file.name,size:ef.file.size,stats:sc,fileData:ef.fileData,is3mf:ef.is3mf};});
+    var allHours=(statsClean?statsClean.estimatedHours:0)+extraFiles.reduce(function(a,ef){return a+(ef.stats?ef.stats.estimatedHours:0);},0);
+    var combinedStats=statsClean?Object.assign({},statsClean,{estimatedHours:allHours}):null;
+    var req=Object.assign({},form,{id:Date.now()+"",fileName:stlFile.name,fileSize:stlFile.size,stlStats:combinedStats,fileData:stlFileData,extraFiles:extraFilesClean,urlScrapedData:urlScrapedData,submittedAt:new Date().toISOString(),status:"Pending",log:[],estimatedReadyDate:readyDate.toISOString(),is3mf:!!stl3MFMeta,meta3mf:stl3MFMeta});
     var updated=[req].concat(requests);setRequests(updated);await saveReqs(updated);
     // Persist user details for autofill next time
     try { localStorage.setItem(UK, JSON.stringify({teacherName:form.teacherName,email:form.email,department:form.department})); } catch(e) {}
@@ -2691,12 +2941,12 @@ export default function PrintPortal() {
     (function(){
       var jobId = req.id;
       var readyStr = readyDate.toLocaleDateString("en-AU",{weekday:"long",day:"numeric",month:"long"});
-      var parts = ["Hi "+req.teacherName+",","","Your 3D print request has been received! Here are your details:","","Job ID: "+jobId,"Project: "+req.projectName,"Material: "+req.material+" ("+req.color+")","Quantity: x"+req.quantity,"File: "+req.fileName,"Estimated Ready: "+readyStr,"","Track your job status at: "+window.location.href,"","Thanks,","MACC Print Lab"];
+      var klaStr=req.kla?KLA_OPTIONS.filter(function(k){return k.id===req.kla;})[0]:"";var klaLabel=klaStr?klaStr.label:"";var extraStr=req.extraFiles&&req.extraFiles.length>0?"\nAdditional files: "+req.extraFiles.map(function(ef){return ef.name;}).join(", "):"";var parts=["Hi "+req.teacherName+",","","Your 3D print request has been received! Here are your details:","","Job ID: "+jobId,"Project: "+req.projectName,(klaLabel?"KLA: "+klaLabel:""),"Material: "+req.material+" ("+req.color+")","Quantity: x"+req.quantity,"File: "+req.fileName+extraStr,"Estimated Ready: "+readyStr,"","Track your job status at: "+window.location.href,"","Thanks,","MACC Print Lab"].filter(Boolean);
       var body = parts.join("\n");
       setTimeout(function(){openMailto(req.email, "Print Request Received - "+req.projectName, body);},800);
     })();
     setTimeout(function(){setShowConfetti(false);},3000);
-    setTimeout(function(){setSubmitted(false);setStep(0);setForm(function(prev){return {teacherName:prev.teacherName,email:prev.email,department:prev.department,projectName:"",purpose:"",quantity:1,dueDate:"",material:"PLA",color:"",filamentId:"",notes:"",sourceUrl:"",priority:false};});setStlFile(null);setStlStats(null);setStlFileData(null);setStl3MFMeta(null);setUrlInfo("");setSubmittedReadyDate(null);},3500);
+    setTimeout(function(){setSubmitted(false);setStep(0);setForm(function(prev){return {teacherName:prev.teacherName,email:prev.email,department:prev.department,projectName:"",purpose:"",quantity:1,dueDate:"",material:"PLA",color:"",filamentId:"",notes:"",sourceUrl:"",priority:false,kla:"",syllabusOutcome:""};});setStlFile(null);setStlStats(null);setStlFileData(null);setStl3MFMeta(null);setExtraFiles([]);setUrlInfo("");setUrlScrapedData(null);setUrlScraping(false);setSubmittedReadyDate(null);},3500);
   }
 
   async function handleLaserSubmit() {
@@ -3112,34 +3362,103 @@ export default function PrintPortal() {
                   <div style={{ position:"absolute", left:12, top:"50%", transform:"translateY(-50%)", fontSize:14, pointerEvents:"none", opacity:0.5 }}>🔗</div>
                   <input value={form.sourceUrl} onChange={function(e){handleUrlInput(e.target.value);}} placeholder="https://www.printables.com/model/..." style={Object.assign({},baseInput,{paddingLeft:34,fontSize:12})}/>
                 </div>
-                {urlInfo&&<div style={{ marginTop:6, display:"flex", alignItems:"center", gap:6, fontSize:11, color:"#22c55e" }}><span>✅</span><span>{urlInfo}</span></div>}
-                <div style={{ fontSize:10, color:"#64748b", marginTop:4 }}>Supports Thingiverse, Printables, MyMiniFactory, MakerWorld, Cults3D, Tinkercad, Thangs</div>
+                {urlScraping&&<div style={{ marginTop:8, display:"flex", alignItems:"center", gap:8, fontSize:11, color:"#f59e0b" }}><div className="pulse" style={{ fontSize:14 }}>🔍</div><span>Fetching model details from {detectPlatform(form.sourceUrl)||"page"}...</span></div>}
+                {!urlScraping&&urlInfo&&<div style={{ marginTop:6, display:"flex", alignItems:"center", gap:6, fontSize:11, color:"#22c55e" }}><span>✅</span><span>{urlInfo}</span></div>}
+                {urlScrapedData&&<div style={{ marginTop:10, background:"rgba(59,130,246,0.06)", border:"1px solid rgba(59,130,246,0.2)", borderRadius:10, padding:14 }}>
+                  <div style={{ fontSize:11, fontWeight:600, color:"#60a5fa", marginBottom:10, display:"flex", alignItems:"center", gap:6 }}>
+                    <span>🔍</span> Scraped from {urlScrapedData.platform}
+                  </div>
+                  {urlScrapedData.thumbnail&&<img src={urlScrapedData.thumbnail} alt="Model preview" style={{ width:"100%", maxHeight:140, objectFit:"cover", borderRadius:7, marginBottom:10 }}/>}
+                  <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:7 }}>
+                    {urlScrapedData.material&&<div style={{ background:"#162032", borderRadius:7, padding:"8px 10px" }}>
+                      <div style={{ fontSize:9, color:"#475569", marginBottom:2 }}>SUGGESTED MATERIAL</div>
+                      <div style={{ fontSize:12, color:"#f97316", fontWeight:500 }}>{urlScrapedData.material}</div>
+                    </div>}
+                    {urlScrapedData.printTime&&<div style={{ background:"#162032", borderRadius:7, padding:"8px 10px" }}>
+                      <div style={{ fontSize:9, color:"#475569", marginBottom:2 }}>CREATOR PRINT TIME</div>
+                      <div style={{ fontSize:12, color:"#3b82f6", fontWeight:500 }}>{urlScrapedData.printTime.label}</div>
+                    </div>}
+                    {urlScrapedData.layerHeight&&<div style={{ background:"#162032", borderRadius:7, padding:"8px 10px" }}>
+                      <div style={{ fontSize:9, color:"#475569", marginBottom:2 }}>LAYER HEIGHT</div>
+                      <div style={{ fontSize:12, color:"#94a3b8" }}>{urlScrapedData.layerHeight}mm</div>
+                    </div>}
+                    {urlScrapedData.infill!=null&&<div style={{ background:"#162032", borderRadius:7, padding:"8px 10px" }}>
+                      <div style={{ fontSize:9, color:"#475569", marginBottom:2 }}>INFILL</div>
+                      <div style={{ fontSize:12, color:"#94a3b8" }}>{urlScrapedData.infill}%</div>
+                    </div>}
+                    {urlScrapedData.supports!=null&&<div style={{ background:"#162032", borderRadius:7, padding:"8px 10px" }}>
+                      <div style={{ fontSize:9, color:"#475569", marginBottom:2 }}>SUPPORTS</div>
+                      <div style={{ fontSize:12, color:urlScrapedData.supports?"#fca5a5":"#4ade80" }}>{urlScrapedData.supports?"Required":"Not needed"}</div>
+                    </div>}
+                    {urlScrapedData.printerProfile&&<div style={{ background:"#162032", borderRadius:7, padding:"8px 10px" }}>
+                      <div style={{ fontSize:9, color:"#475569", marginBottom:2 }}>PRINTER PROFILE</div>
+                      <div style={{ fontSize:11, color:"#94a3b8" }}>{urlScrapedData.printerProfile}</div>
+                    </div>}
+                  </div>
+                  {urlScrapedData.description&&<div style={{ marginTop:8, fontSize:11, color:"#64748b", lineHeight:1.7, borderTop:"1px solid #334155", paddingTop:8 }}>
+                    {urlScrapedData.description.substring(0,280)}{urlScrapedData.description.length>280?"...":""}
+                  </div>}
+                  {urlScrapedData.tags&&urlScrapedData.tags.length>0&&<div style={{ marginTop:8, display:"flex", flexWrap:"wrap", gap:5 }}>
+                    {urlScrapedData.tags.map(function(t){return <span key={t} style={{ background:"#1e293b", border:"1px solid #334155", borderRadius:4, padding:"2px 7px", fontSize:10, color:"#475569" }}>{t}</span>;})}
+                  </div>}
+                </div>}
+                <div style={{ fontSize:10, color:"#64748b", marginTop:4 }}>Supports Thingiverse, Printables, MyMiniFactory, MakerWorld, Cults3D, Tinkercad, Thangs — print settings scraped automatically</div>
               </div>
               <div style={{ borderTop:"1px solid #111827", paddingTop:14 }}>
                 <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
-                  <Lbl>STL File *</Lbl>
-                  <button className="bh" onClick={function(){if(fileRef.current)fileRef.current.click();}} style={{ background:"rgba(249,115,22,0.1)", color:"#f97316", border:"1px solid rgba(249,115,22,0.3)", borderRadius:6, padding:"4px 12px", fontFamily:"'DM Mono',monospace", fontSize:10, cursor:"pointer", letterSpacing:"0.06em", textTransform:"uppercase", flexShrink:0 }}>📂 Browse Files</button>
+                  <Lbl>3D Files * {extraFiles.length>0&&<span style={{ color:"#f97316", fontWeight:600 }}>({1+extraFiles.length} files)</span>}</Lbl>
+                  <button className="bh" onClick={function(){if(fileRef.current)fileRef.current.click();}} style={{ background:"rgba(249,115,22,0.1)", color:"#f97316", border:"1px solid rgba(249,115,22,0.3)", borderRadius:6, padding:"4px 12px", fontFamily:"'DM Mono',monospace", fontSize:10, cursor:"pointer", letterSpacing:"0.06em", textTransform:"uppercase", flexShrink:0 }}>📂 Browse</button>
                 </div>
-                <div ref={dragRef} onDragOver={function(e){e.preventDefault();if(dragRef.current)dragRef.current.classList.add("drag-over");}} onDragLeave={function(){if(dragRef.current)dragRef.current.classList.remove("drag-over");}} onDrop={onDrop} onClick={function(){if(fileRef.current)fileRef.current.click();}} style={{ border:"2px dashed", borderColor:stlFile?"#f97316":"#475569", borderRadius:12, padding:"28px 24px", textAlign:"center", cursor:"pointer", background:stlFile?"rgba(249,115,22,0.03)":"transparent", transition:"all .2s" }}>
+                {/* Primary file drop zone */}
+                <div ref={dragRef} onDragOver={function(e){e.preventDefault();if(dragRef.current)dragRef.current.classList.add("drag-over");}} onDragLeave={function(){if(dragRef.current)dragRef.current.classList.remove("drag-over");}} onDrop={onDrop} onClick={function(){if(fileRef.current)fileRef.current.click();}} style={{ border:"2px dashed", borderColor:stlFile?"#f97316":"#475569", borderRadius:12, padding:"20px 24px", textAlign:"center", cursor:"pointer", background:stlFile?"rgba(249,115,22,0.03)":"transparent", transition:"all .2s" }}>
                   <input ref={fileRef} type="file" accept=".stl,.3mf" style={{ display:"none" }} onChange={function(e){if(e.target.files&&e.target.files[0])handleFile(e.target.files[0]);}}/>
-                  {parsing&&<div><div className="pulse" style={{ fontSize:30, marginBottom:10 }}>⚙️</div><div style={{ fontSize:13, color:"#f97316" }}>Analysing your design...</div></div>}
-                  {!parsing&&stlFile&&<div>
-                    <div style={{ fontSize:36, marginBottom:8 }}>📦</div>
-                    <div style={{ fontSize:14, color:"#f97316", fontWeight:500 }}>{stlFile.name}</div>
-                    <div style={{ fontSize:11, color:"#64748b", marginTop:3 }}>{(stlFile.size/1024).toFixed(1)} KB</div>
-                    {stlStats&&checkBuildVolume(stlStats.dimensions).length>0&&<div style={{ marginTop:8, background:"rgba(239,68,68,0.1)", border:"1px solid rgba(239,68,68,0.3)", borderRadius:7, padding:"8px 12px" }}>
-                      {checkBuildVolume(stlStats.dimensions).map(function(w,i){return <div key={i} style={{ fontSize:11, color:"#ef4444" }}>⚠️ {w}</div>;})}
-                    </div>}
-                    {stlStats&&getCx(stlStats.triangles).warn&&<div style={{ marginTop:8, background:"rgba(239,68,68,0.08)", border:"1px solid rgba(239,68,68,0.2)", borderRadius:7, padding:"8px 12px", fontSize:11, color:"#ef4444" }}>⚠️ Very high complexity ({stlStats.triangles.toLocaleString()} triangles) — slicing may take a while.</div>}
-                    <button className="bh" onClick={function(e){e.stopPropagation();if(fileRef.current)fileRef.current.click();}} style={{ marginTop:8, background:"transparent", color:"#64748b", border:"1px solid #1f2937", borderRadius:5, padding:"4px 12px", fontFamily:"'DM Mono',monospace", fontSize:10, cursor:"pointer" }}>Replace file</button>
+                  {parsing&&<div><div className="pulse" style={{ fontSize:28, marginBottom:8 }}>⚙️</div><div style={{ fontSize:13, color:"#f97316" }}>Analysing...</div></div>}
+                  {!parsing&&stlFile&&<div style={{ display:"flex", alignItems:"center", gap:12, textAlign:"left" }}>
+                    <div style={{ fontSize:28, flexShrink:0 }}>📦</div>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ fontSize:13, color:"#f97316", fontWeight:500, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{stlFile.name}</div>
+                      <div style={{ fontSize:10, color:"#64748b", marginTop:2 }}>{(stlFile.size/1024).toFixed(1)} KB{stlStats?" · "+fmtH(stlStats.estimatedHours)+" est.":""}</div>
+                    </div>
+                    <button className="bh" onClick={function(e){e.stopPropagation();if(fileRef.current)fileRef.current.click();}} style={{ flexShrink:0, background:"transparent", color:"#64748b", border:"1px solid #334155", borderRadius:5, padding:"4px 10px", fontSize:10, cursor:"pointer" }}>Replace</button>
                   </div>}
                   {!parsing&&!stlFile&&<div>
-                    <div style={{ fontSize:44, marginBottom:10, opacity:0.3 }}>🖨️</div>
-                    <div style={{ fontSize:14, color:"#64748b", marginBottom:4 }}>Drag your STL file here</div>
-                    <div style={{ fontSize:11, color:"#64748b" }}>or use the Browse Files button above</div>
+                    <div style={{ fontSize:36, marginBottom:8, opacity:0.3 }}>🖨️</div>
+                    <div style={{ fontSize:13, color:"#64748b", marginBottom:2 }}>Drag your primary STL file here</div>
+                    <div style={{ fontSize:10, color:"#475569" }}>or click Browse · .stl or .3mf</div>
                   </div>}
                 </div>
-                {stlError&&<div style={{ background:"rgba(239,68,68,0.07)", border:"1px solid rgba(239,68,68,0.2)", borderRadius:8, padding:"10px 12px", fontSize:11, color:"#ef4444", lineHeight:1.6, marginTop:8 }}>{stlError}</div>}
+                {stlFile&&checkBuildVolume(stlStats&&stlStats.dimensions||{x:0,y:0,z:0}).length>0&&<div style={{ marginTop:6, background:"rgba(239,68,68,0.08)", border:"1px solid rgba(239,68,68,0.2)", borderRadius:7, padding:"8px 12px" }}>
+                  {checkBuildVolume(stlStats.dimensions).map(function(w,i){return <div key={i} style={{ fontSize:11, color:"#ef4444" }}>⚠️ {w}</div>;})}
+                </div>}
+                {stlError&&<div style={{ background:"rgba(239,68,68,0.07)", border:"1px solid rgba(239,68,68,0.2)", borderRadius:8, padding:"10px 12px", fontSize:11, color:"#ef4444", lineHeight:1.6, marginTop:6 }}>{stlError}</div>}
+
+                {/* Extra files */}
+                {extraFiles.length>0&&<div style={{ marginTop:10, display:"flex", flexDirection:"column", gap:6 }}>
+                  {extraFiles.map(function(ef) {
+                    return <div key={ef.id} style={{ background:"#162032", border:"1px solid #334155", borderRadius:8, padding:"10px 14px", display:"flex", alignItems:"center", gap:12 }}>
+                      <div style={{ fontSize:22, flexShrink:0 }}>{ef.parsing?"⚙️":"📦"}</div>
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <div style={{ fontSize:12, color:"#f97316", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{ef.file.name}</div>
+                        <div style={{ fontSize:10, color:"#64748b", marginTop:2 }}>
+                          {ef.parsing?"Analysing...":ef.error?ef.error:((ef.file.size/1024).toFixed(1)+"KB"+(ef.stats?" · "+fmtH(ef.stats.estimatedHours)+" est.":""))}
+                        </div>
+                        {ef.error&&<div style={{ fontSize:10, color:"#ef4444", marginTop:2 }}>⚠️ {ef.error}</div>}
+                      </div>
+                      <button onClick={function(){removeExtraFile(ef.id);}} style={{ flexShrink:0, background:"rgba(239,68,68,0.08)", color:"#ef4444", border:"1px solid rgba(239,68,68,0.2)", borderRadius:5, padding:"4px 10px", fontSize:11, cursor:"pointer" }}>Remove</button>
+                    </div>;
+                  })}
+                </div>}
+
+                {/* Add another file */}
+                {stlFile&&<div>
+                  <input type="file" accept=".stl,.3mf" style={{ display:"none" }} id="extra-file-input" onChange={function(e){if(e.target.files&&e.target.files[0]){handleAddExtraFile(e.target.files[0]);e.target.value="";}}}/>
+                  <button className="bh" onClick={function(){document.getElementById("extra-file-input").click();}} style={{ width:"100%", marginTop:8, background:"transparent", color:"#64748b", border:"1px dashed #334155", borderRadius:8, padding:"8px 0", fontFamily:"inherit", fontSize:11, cursor:"pointer" }}>
+                    + Add another file to this job
+                  </button>
+                  {extraFiles.length>0&&<div style={{ fontSize:10, color:"#64748b", marginTop:6, textAlign:"center" }}>
+                    Combined estimate: {fmtH((stlStats?stlStats.estimatedHours:0)+extraFiles.reduce(function(a,ef){return a+(ef.stats?ef.stats.estimatedHours:0);},0))} × {form.quantity} {form.quantity>1?"copies":"copy"}
+                  </div>}
+                </div>}
               </div>
             </Card>
 
@@ -3169,6 +3488,19 @@ export default function PrintPortal() {
             <Card title="What are you printing?">
               <div><Lbl>Project name</Lbl><input value={form.projectName} placeholder='e.g. "Volcano model for Year 9"' onChange={function(e){setForm(function(f){return Object.assign({},f,{projectName:e.target.value});});}} style={baseInput}/></div>
               <div><Lbl>What's it for? (optional)</Lbl><textarea value={form.purpose} rows={2} placeholder="e.g. End-of-term science fair" onChange={function(e){setForm(function(f){return Object.assign({},f,{purpose:e.target.value});});}} style={Object.assign({},baseInput,{resize:"vertical",lineHeight:1.7})}/></div>
+              <div>
+                <Lbl>Key Learning Area (optional)</Lbl>
+                <div style={{ display:"flex", flexWrap:"wrap", gap:8, marginTop:2 }}>
+                  {KLA_OPTIONS.map(function(k){var active=form.kla===k.id;return <button key={k.id} type="button" onClick={function(){setForm(function(f){return Object.assign({},f,{kla:active?"":k.id});});}} className="bh" style={{ display:"flex", alignItems:"center", gap:6, background:active?"rgba("+hexToRgb(k.color)+",0.15)":"#162032", border:"1px solid "+(active?k.color:"#334155"), borderRadius:8, padding:"7px 12px", fontFamily:"inherit", fontSize:12, cursor:"pointer", color:active?k.color:"#64748b", transition:"all .15s" }}>
+                    <span style={{ fontSize:14 }}>{k.emoji}</span> {k.label}
+                  </button>;})}
+                </div>
+                {form.kla&&<div style={{ marginTop:10 }}>
+                  <Lbl>Syllabus outcome or cross-curriculum link (optional)</Lbl>
+                  <input value={form.syllabusOutcome} onChange={function(e){setForm(function(f){return Object.assign({},f,{syllabusOutcome:e.target.value});});}} placeholder="e.g. SC4-4WS — Working scientifically" style={Object.assign({},baseInput,{fontSize:12})}/>
+                  <div style={{ fontSize:10, color:"#475569", marginTop:4 }}>Helps justify the print for curriculum reporting</div>
+                </div>}
+              </div>
               <div className="g2s">
                 <div>
                   <Lbl>How many copies?</Lbl>
@@ -3204,10 +3536,14 @@ export default function PrintPortal() {
           {step===2&&<div className="fu" style={{ display:"flex", flexDirection:"column", gap:14 }}>
             <Card title="Summary — does everything look right?">
               <div className="g2s" style={{ gap:10 }}>
-                {[["Name",form.teacherName],["Email",form.email],["Department",form.department||"Not specified"],["Project",form.projectName],["Quantity","x"+form.quantity],["Due",form.dueDate?new Date(form.dueDate+"T00:00:00").toLocaleDateString("en-AU",{weekday:"long",day:"numeric",month:"long"}):"—"],["Material",form.material+" — "+form.color],["File",stlFile?stlFile.name:"—"],["Source URL",form.sourceUrl||"Not provided"]].map(function(pair){
+                {[["Name",form.teacherName],["Email",form.email],["Department",form.department||"Not specified"],["Project",form.projectName],["Quantity","x"+form.quantity],["Due",form.dueDate?new Date(form.dueDate+"T00:00:00").toLocaleDateString("en-AU",{weekday:"long",day:"numeric",month:"long"}):"—"],["Material",form.material+" — "+form.color],["File",stlFile?stlFile.name+(extraFiles.length>0?" + "+extraFiles.length+" more":""):"—"],["Source URL",form.sourceUrl||"Not provided"]].map(function(pair){
                   return <div key={pair[0]} style={{ background:"#162032", borderRadius:8, padding:"10px 12px" }}><div style={{ fontSize:10, color:"#64748b", marginBottom:3 }}>{pair[0]}</div><div style={{ fontSize:12, color:"#9ca3af", wordBreak:"break-all" }}>{pair[1]}</div></div>;
                 })}
               </div>
+              {form.kla&&(function(){var klaObj=KLA_OPTIONS.filter(function(k){return k.id===form.kla;})[0];return klaObj?<div style={{ background:"rgba("+hexToRgb(klaObj.color)+",0.08)", border:"1px solid "+klaObj.color+"33", borderRadius:8, padding:"10px 12px", display:"flex", alignItems:"center", gap:10 }}>
+                <span style={{ fontSize:20 }}>{klaObj.emoji}</span>
+                <div><div style={{ fontSize:11, fontWeight:500, color:klaObj.color }}>{klaObj.label}</div>{form.syllabusOutcome&&<div style={{ fontSize:11, color:"#64748b", marginTop:2 }}>{form.syllabusOutcome}</div>}</div>
+              </div>:null;})()}
               {form.notes&&<div style={{ background:"#162032", borderRadius:8, padding:"10px 12px" }}><div style={{ fontSize:10, color:"#64748b", marginBottom:3 }}>Notes</div><div style={{ fontSize:12, color:"#94a3b8", lineHeight:1.7 }}>{form.notes}</div></div>}
               {stlStats&&<div style={{ background:"rgba(249,115,22,0.06)", border:"1px solid rgba(249,115,22,0.12)", borderRadius:8, padding:12, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
                 <div><div style={{ fontSize:10, color:"#64748b", marginBottom:2 }}>Estimated print time</div><div style={{ fontSize:20, fontFamily:"'Syne',sans-serif", fontWeight:900, color:"#f97316" }}>{fmtH(stlStats.estimatedHours*form.quantity*0.85)}</div></div>
@@ -3345,6 +3681,7 @@ export default function PrintPortal() {
                 </div>
                 {selReq.purpose&&<div style={{ fontSize:12, color:"#64748b", marginTop:4, lineHeight:1.6 }}>{selReq.purpose}</div>}
                 <div style={{ fontSize:10, color:"#475569", marginTop:4 }}>Submitted {new Date(selReq.submittedAt).toLocaleString()}</div>
+              {selReq.kla&&(function(){var klaObj=KLA_OPTIONS.filter(function(k){return k.id===selReq.kla;})[0];return klaObj?<div style={{ display:"inline-flex", alignItems:"center", gap:5, marginTop:6, background:"rgba("+hexToRgb(klaObj.color)+",0.1)", border:"1px solid "+klaObj.color+"44", borderRadius:5, padding:"3px 8px" }}><span style={{ fontSize:12 }}>{klaObj.emoji}</span><span style={{ fontSize:11, color:klaObj.color, fontWeight:500 }}>{klaObj.label}</span>{selReq.syllabusOutcome&&<span style={{ fontSize:10, color:"#64748b" }}>· {selReq.syllabusOutcome}</span>}</div>:null;})()}
               </div>
 
               {selReq.status==="Printing"&&selReq.printStartedAt&&(selReq.stlStats||selReq.jobCategory==="laser")&&<div style={{ background:"rgba(59,130,246,0.06)", border:"1px solid rgba(59,130,246,0.18)", borderRadius:10, padding:12 }}>
@@ -3359,6 +3696,41 @@ export default function PrintPortal() {
               </div>
 
               {selReq.sourceUrl&&<div style={{ background:"#162032", borderRadius:7, padding:"8px 10px" }}><div style={{ fontSize:9, color:"#475569", marginBottom:3 }}>Source URL</div><a href={selReq.sourceUrl} target="_blank" rel="noreferrer" style={{ fontSize:11, color:"#3b82f6", wordBreak:"break-all" }}>{selReq.sourceUrl}</a></div>}
+              {selReq.urlScrapedData&&(function(){
+                var sd=selReq.urlScrapedData;
+                var hasSettings=sd.material||sd.layerHeight||sd.infill!=null||sd.supports!=null||sd.printTime||sd.printerProfile;
+                if(!hasSettings&&!sd.description)return null;
+                return <div style={{ background:"rgba(59,130,246,0.05)", border:"1px solid rgba(59,130,246,0.2)", borderRadius:10, padding:14 }}>
+                  <div style={{ fontSize:10, fontWeight:600, color:"#60a5fa", marginBottom:10, letterSpacing:"0.06em" }}>CREATOR'S RECOMMENDED SETTINGS ({(sd.platform||"").toUpperCase()})</div>
+                  <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:7, marginBottom:hasSettings?10:0 }}>
+                    {sd.material&&<div style={{ background:"#162032", borderRadius:7, padding:"8px 10px" }}>
+                      <div style={{ fontSize:9, color:"#475569", marginBottom:2 }}>MATERIAL</div>
+                      <div style={{ fontSize:13, color:"#f97316", fontWeight:600 }}>{sd.material}</div>
+                    </div>}
+                    {sd.printTime&&<div style={{ background:"#162032", borderRadius:7, padding:"8px 10px" }}>
+                      <div style={{ fontSize:9, color:"#475569", marginBottom:2 }}>PRINT TIME (creator)</div>
+                      <div style={{ fontSize:13, color:"#3b82f6", fontWeight:600 }}>{sd.printTime.label}</div>
+                    </div>}
+                    {sd.layerHeight&&<div style={{ background:"#162032", borderRadius:7, padding:"8px 10px" }}>
+                      <div style={{ fontSize:9, color:"#475569", marginBottom:2 }}>LAYER HEIGHT</div>
+                      <div style={{ fontSize:12, color:"#94a3b8", fontWeight:500 }}>{sd.layerHeight}mm</div>
+                    </div>}
+                    {sd.infill!=null&&<div style={{ background:"#162032", borderRadius:7, padding:"8px 10px" }}>
+                      <div style={{ fontSize:9, color:"#475569", marginBottom:2 }}>INFILL</div>
+                      <div style={{ fontSize:12, color:"#94a3b8", fontWeight:500 }}>{sd.infill}%</div>
+                    </div>}
+                    {sd.supports!=null&&<div style={{ background:"rgba("+(sd.supports?"239,68,68":"34,197,94")+",0.06)", border:"1px solid rgba("+(sd.supports?"239,68,68":"34,197,94")+",0.2)", borderRadius:7, padding:"8px 10px" }}>
+                      <div style={{ fontSize:9, color:"#475569", marginBottom:2 }}>SUPPORTS</div>
+                      <div style={{ fontSize:12, color:sd.supports?"#fca5a5":"#4ade80", fontWeight:600 }}>{sd.supports?"⚠ Required":"✓ Not needed"}</div>
+                    </div>}
+                    {sd.printerProfile&&<div style={{ background:"#162032", borderRadius:7, padding:"8px 10px" }}>
+                      <div style={{ fontSize:9, color:"#475569", marginBottom:2 }}>PRINTER PROFILE</div>
+                      <div style={{ fontSize:11, color:"#94a3b8" }}>{sd.printerProfile}</div>
+                    </div>}
+                  </div>
+                  {sd.description&&<div style={{ fontSize:11, color:"#64748b", lineHeight:1.7, borderTop:"1px solid #334155", paddingTop:8 }}>{sd.description.substring(0,400)}</div>}
+                </div>;
+              })()}
 
               {selReq.notes&&<div style={{ background:"#162032", border:"1px solid #111827", borderRadius:8, padding:"10px 12px" }}><div style={{ fontSize:9, color:"#475569", marginBottom:4 }}>NOTES</div><div style={{ fontSize:11, color:"#64748b", lineHeight:1.7 }}>{selReq.notes}</div></div>}
 
@@ -3379,6 +3751,11 @@ export default function PrintPortal() {
                 </div>
               </div>}
 
+              {selReq.extraFiles&&selReq.extraFiles.length>0&&<div style={{ background:"#162032", border:"1px solid #334155", borderRadius:8, padding:"10px 14px" }}>
+                <div style={{ fontSize:10, color:"#64748b", marginBottom:6 }}>All files ({1+selReq.extraFiles.length} total)</div>
+                <div style={{ fontSize:12, color:"#f97316", marginBottom:4 }}>{selReq.fileName}</div>
+                {selReq.extraFiles.map(function(ef){return <div key={ef.name} style={{ fontSize:11, color:"#64748b", marginTop:2 }}>+ {ef.name}</div>;})}
+              </div>}
               {selReq.fileData&&<div style={{ background:"#162032", borderRadius:8, padding:"10px 14px", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
                 <div><div style={{ fontSize:10, color:"#64748b", marginBottom:2 }}>Design file stored</div><div style={{ fontSize:11, color:"#94a3b8" }}>{selReq.fileName}</div></div>
                 <button className="bh" onClick={function(){downloadDataURL(selReq.fileData, selReq.fileName);}} style={{ background:"#1e293b", color:"#3b82f6", border:"1px solid #334155", borderRadius:6, padding:"6px 12px", fontSize:10, cursor:"pointer", fontFamily:"inherit" }}>Download</button>
