@@ -8,6 +8,7 @@ var AK = "pl_admins_v2";
 var IK = "pl_inv_v2";
 var SK = "pl_settings_v1";
 var TK = "pl_templates_v1";
+var UK = "pl_user_prefs_v1"; // stores returning user name/email/dept
 var LIK = "pl_laser_inv_v1";
 
 // ─── Storage abstraction (localStorage now, Supabase when configured) ──────────
@@ -2488,8 +2489,13 @@ export default function PrintPortal() {
   var sma=useState(false); var showMA=sma[0],setShowMA=sma[1];
   var sps=useState(false); var showPrinterSettings=sps[0],setShowPrinterSettings=sps[1];
   var stpl=useState(false); var showTemplates=stpl[0],setShowTemplates=stpl[1];
+  var satpl=useState(false); var saveAsTpl=satpl[0],setSaveAsTpl=satpl[1];
   var sstep=useState(0); var step=sstep[0],setStep=sstep[1];
-  var sform=useState({teacherName:"",email:"",department:"",projectName:"",purpose:"",quantity:1,dueDate:"",material:"PLA",color:"",filamentId:"",notes:"",sourceUrl:"",priority:false});
+  var sform=useState(function(){
+    var defaults={teacherName:"",email:"",department:"",projectName:"",purpose:"",quantity:1,dueDate:"",material:"PLA",color:"",filamentId:"",notes:"",sourceUrl:"",priority:false};
+    try { var saved=JSON.parse(localStorage.getItem(UK)||"null"); if(saved)return Object.assign({},defaults,{teacherName:saved.teacherName||"",email:saved.email||"",department:saved.department||""}); } catch(e) {}
+    return defaults;
+  }); 
   var form=sform[0],setForm=sform[1];
   var sstl=useState(null); var stlFile=sstl[0],setStlFile=sstl[1];
   var sstats=useState(null); var stlStats=sstats[0],setStlStats=sstats[1];
@@ -2608,7 +2614,7 @@ export default function PrintPortal() {
   async function saveTemplate(){
     var t={id:"t-"+Date.now(),projectName:form.projectName,purpose:form.purpose,quantity:form.quantity,material:form.material,color:form.color,department:form.department,notes:form.notes};
     var existing=await loadTemplates();await saveTemplates(existing.concat([t]));
-    alert("Template saved: "+t.projectName);
+    // template saved silently
   }
 
   function useTemplate(t){setForm(function(f){return Object.assign({},f,{projectName:t.projectName,purpose:t.purpose||"",quantity:t.quantity,material:t.material,color:t.color,department:t.department||"",notes:t.notes||""});});}
@@ -2619,6 +2625,8 @@ export default function PrintPortal() {
     var readyDate=estimateReadyDate(requests,{stlStats:statsClean,quantity:form.quantity});
     var req=Object.assign({},form,{id:Date.now()+"",fileName:stlFile.name,fileSize:stlFile.size,stlStats:statsClean,fileData:stlFileData,submittedAt:new Date().toISOString(),status:"Pending",log:[],estimatedReadyDate:readyDate.toISOString(),is3mf:!!stl3MFMeta,meta3mf:stl3MFMeta});
     var updated=[req].concat(requests);setRequests(updated);await saveReqs(updated);
+    // Persist user details for autofill next time
+    try { localStorage.setItem(UK, JSON.stringify({teacherName:form.teacherName,email:form.email,department:form.department})); } catch(e) {}
     setSubmittedReadyDate(readyDate);
     setShowConfetti(true);setSubmitted(true);
     // Send receipt email to teacher
@@ -2630,7 +2638,7 @@ export default function PrintPortal() {
       setTimeout(function(){window.open("mailto:"+req.email+"?subject="+encodeURIComponent("Print Request Received — "+req.projectName)+"&body="+encodeURIComponent(body));},800);
     })();
     setTimeout(function(){setShowConfetti(false);},3000);
-    setTimeout(function(){setSubmitted(false);setStep(0);setForm({teacherName:"",email:"",department:"",projectName:"",purpose:"",quantity:1,dueDate:"",material:"PLA",color:"",filamentId:"",notes:"",sourceUrl:"",priority:false});setStlFile(null);setStlStats(null);setStlFileData(null);setStl3MFMeta(null);setUrlInfo("");setSubmittedReadyDate(null);},3500);
+    setTimeout(function(){setSubmitted(false);setStep(0);setForm(function(prev){return {teacherName:prev.teacherName,email:prev.email,department:prev.department,projectName:"",purpose:"",quantity:1,dueDate:"",material:"PLA",color:"",filamentId:"",notes:"",sourceUrl:"",priority:false};});setStlFile(null);setStlStats(null);setStlFileData(null);setStl3MFMeta(null);setUrlInfo("");setSubmittedReadyDate(null);},3500);
   }
 
   async function handleLaserSubmit() {
@@ -3151,9 +3159,13 @@ export default function PrintPortal() {
             <div style={{ background:"rgba(34,197,94,0.06)", border:"1px solid rgba(34,197,94,0.2)", borderRadius:8, padding:"10px 14px", fontSize:11, color:"#22c55e" }}>
               ✉ After submitting, your email client will open with a confirmation message to send yourself.
             </div>
+            <div style={{ display:"flex", alignItems:"center", gap:10, background:"rgba(168,85,247,0.06)", border:"1px solid rgba(168,85,247,0.15)", borderRadius:8, padding:"10px 14px", cursor:"pointer" }} onClick={function(){setSaveAsTpl(function(v){return !v;});  }}>
+              <input type="checkbox" checked={saveAsTpl} onChange={function(){}} style={{ width:15, height:15, accentColor:"#a855f7", cursor:"pointer", flexShrink:0 }}/>
+              <div style={{ fontSize:12, color:saveAsTpl?"#c084fc":"#64748b" }}>Save as template for quick reuse next time</div>
+            </div>
             <div style={{ display:"flex", gap:10 }}>
-              <button className="bh" onClick={function(){setStep(1);}} style={{ flex:"0 0 auto", background:"transparent", color:"#64748b", border:"1px solid #111827", borderRadius:8, padding:"12px 20px", fontFamily:"inherit", fontSize:11, cursor:"pointer" }}>← Edit</button>
-              <button className="bh" onClick={function(){saveTemplate().then(function(){});handleSubmit();sendConfirmEmail(Object.assign({},form,{fileName:stlFile?stlFile.name:"",id:"new"}),estimateReadyDate(requests,{stlStats:stlStats,quantity:form.quantity}));}} style={{ flex:1, background:"#ea580c", color:"#fff", border:"none", borderRadius:8, padding:"14px 0", fontFamily:"inherit", fontSize:13, letterSpacing:"0.1em", textTransform:"uppercase", cursor:"pointer" }}>🚀 Submit Print Request</button>
+              <button className="bh" onClick={function(){setStep(1);}} style={{ flex:"0 0 auto", background:"transparent", color:"#64748b", border:"1px solid #334155", borderRadius:8, padding:"12px 20px", fontFamily:"inherit", fontSize:11, cursor:"pointer" }}>← Edit</button>
+              <button className="bh" onClick={function(){if(saveAsTpl)saveTemplate();handleSubmit();}} style={{ flex:1, background:"#ea580c", color:"#fff", border:"none", borderRadius:8, padding:"14px 0", fontFamily:"inherit", fontSize:13, letterSpacing:"0.1em", textTransform:"uppercase", cursor:"pointer", fontWeight:500 }}>🚀 Submit Print Request</button>
             </div>
           </div>}
         </div>)}
