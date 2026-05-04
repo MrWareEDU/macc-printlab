@@ -39,6 +39,16 @@ async function sset(k, v) {
   try { await window.storage.set(k, str); } catch(e) {}
 }
 
+
+// ─── Safe mailto opener — uses <a> click, never window.open() ────────────────
+function openMailto(to, subject, body) {
+  var a = document.createElement("a");
+  a.href = "mailto:" + (to||"") + "?subject=" + encodeURIComponent(subject) + "&body=" + encodeURIComponent(body);
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(function() { document.body.removeChild(a); }, 500);
+}
 // ─── Push notification helpers ────────────────────────────────────────────────
 var NOTIF_PERM_KEY = "pl_notif_perm_v1";
 var NOTIF_STATUS_KEY = "pl_notif_statuses_v1";
@@ -394,7 +404,7 @@ function sendConfirmEmail(req, readyDate) {
     + "Project: " + req.projectName + "\nFile: " + req.fileName + "\nMaterial: " + req.material + " (" + req.color + ")\nQty: x" + req.quantity + "\n"
     + "\nEstimated ready: " + readyStr
     + "\n\nYou'll get another email when printing starts and when it's ready to collect.\n\nThanks,\nPrint Lab, MACC";
-  window.open("mailto:" + req.email + "?subject=" + encodeURIComponent("Print Request Received - " + req.projectName) + "&body=" + encodeURIComponent(body));
+  openMailto(req.email, "Print Request Received - " + req.projectName, body);
 }
 function sendStartEmail(req, admin, note) {
   var th = req.stlStats ? req.stlStats.estimatedHours * req.quantity * 0.85 : null;
@@ -404,7 +414,7 @@ function sendStartEmail(req, admin, note) {
   var body = "Hi " + req.teacherName + ",\n\nYour 3D print has started! \uD83D\uDDA8\uFE0F\n\n"
     + "Project: " + req.projectName + "\nMaterial: " + req.material + " - " + req.color + "\nQty: x" + req.quantity + "\nEst. Ready: " + eta
     + noteLine + "\n\nYou'll be notified when it's ready to collect.\n\nThanks,\n" + adminName + ", Print Lab";
-  window.open("mailto:" + req.email + "?subject=" + encodeURIComponent("Your Print Has Started - " + req.projectName) + "&body=" + encodeURIComponent(body));
+  openMailto(req.email, "Your Print Has Started - " + req.projectName, body);
 }
 function sendReadyEmail(req, admin, note) {
   var adminName = admin && admin.name ? admin.name : "Print Lab";
@@ -412,14 +422,14 @@ function sendReadyEmail(req, admin, note) {
   var body = "Hi " + req.teacherName + ",\n\nYour 3D print is ready for pickup! \uD83C\uDF89\n\n"
     + "Project: " + req.projectName + "\nQty: x" + req.quantity + " - " + req.material + " (" + req.color + ")"
     + noteLine + "\n\nPlease collect from the Print Lab at your convenience.\n\nThanks,\n" + adminName + ", Print Lab";
-  window.open("mailto:" + req.email + "?subject=" + encodeURIComponent("Ready for Pickup - " + req.projectName) + "&body=" + encodeURIComponent(body));
+  openMailto(req.email, "Ready for Pickup - " + req.projectName, body);
 }
 function sendShoppingEmail(items, admin) {
   var adminName = admin && admin.name ? admin.name : "Print Lab";
   var lines = items.map(function(i) { return "- " + i.type + " " + i.color + ": order " + i.suggestSpools + " spool(s) (~" + fmtAUD(i.suggestSpools*i.price) + ")"; }).join("\n");
   var total = items.reduce(function(a,i) { return a+i.suggestSpools*i.price; }, 0);
   var body = "Hi,\n\nThe Print Lab needs the following filament from Bambu Lab Australia:\n\n" + lines + "\n\nTotal: ~" + fmtAUD(total) + " AUD\nShop: https://au.store.bambulab.com/collections/filament\n\nThanks,\n" + adminName;
-  window.open("mailto:?subject=" + encodeURIComponent("Filament Restock - Print Lab MACC") + "&body=" + encodeURIComponent(body));
+  openMailto("", "Filament Restock - Print Lab MACC", body);
 }
 
 
@@ -609,7 +619,7 @@ function sendRejectEmail(req, admin, reason) {
   if (reason) parts.push("", "Reason: " + reason);
   parts.push("", "Please resubmit or contact the Print Lab.", "", "Thanks,", adminName);
   var body = parts.join("\n");
-  window.open("mailto:" + req.email + "?subject=" + encodeURIComponent("Print Request Update - " + req.projectName) + "&body=" + encodeURIComponent(body));
+  openMailto(req.email, "Print Request Update - " + req.projectName, body);
 }
 function sendFailedEmail(req, admin, reason) {
   var adminName = admin && admin.name ? admin.name : "Print Lab";
@@ -617,7 +627,7 @@ function sendFailedEmail(req, admin, reason) {
   if (reason) parts.push("", "Details: " + reason);
   parts.push("", "We will re-queue as soon as possible.", "", "Sorry for the delay,", adminName);
   var body = parts.join("\n");
-  window.open("mailto:" + req.email + "?subject=" + encodeURIComponent("Print Failed - " + req.projectName) + "&body=" + encodeURIComponent(body));
+  openMailto(req.email, "Print Failed - " + req.projectName, body);
 }
 // ─── Responsive hook ──────────────────────────────────────────────────────────
 function useWidth() {
@@ -2635,7 +2645,7 @@ export default function PrintPortal() {
       var readyStr = readyDate.toLocaleDateString("en-AU",{weekday:"long",day:"numeric",month:"long"});
       var parts = ["Hi "+req.teacherName+",","","Your 3D print request has been received! Here are your details:","","Job ID: "+jobId,"Project: "+req.projectName,"Material: "+req.material+" ("+req.color+")","Quantity: x"+req.quantity,"File: "+req.fileName,"Estimated Ready: "+readyStr,"","Track your job status at: "+window.location.href,"","Thanks,","MACC Print Lab"];
       var body = parts.join("\n");
-      setTimeout(function(){window.open("mailto:"+req.email+"?subject="+encodeURIComponent("Print Request Received — "+req.projectName)+"&body="+encodeURIComponent(body));},800);
+      setTimeout(function(){openMailto(req.email, "Print Request Received - "+req.projectName, body);},800);
     })();
     setTimeout(function(){setShowConfetti(false);},3000);
     setTimeout(function(){setSubmitted(false);setStep(0);setForm(function(prev){return {teacherName:prev.teacherName,email:prev.email,department:prev.department,projectName:"",purpose:"",quantity:1,dueDate:"",material:"PLA",color:"",filamentId:"",notes:"",sourceUrl:"",priority:false};});setStlFile(null);setStlStats(null);setStlFileData(null);setStl3MFMeta(null);setUrlInfo("");setSubmittedReadyDate(null);},3500);
@@ -2659,7 +2669,7 @@ export default function PrintPortal() {
     (function(){
       var parts = ["Hi "+req.teacherName+",","","Your laser job request has been received!","","Job ID: "+req.id,"Project: "+req.projectName,"Job Type: "+(req.jobType||"Engrave"),"Material: "+(req.laserMaterial||""),"File: "+(req.fileName||""),"","Track your status at: "+window.location.href,"","Thanks,","MACC Print Lab"];
       var body = parts.join("\n");
-      setTimeout(function(){window.open("mailto:"+req.email+"?subject="+encodeURIComponent("Laser Request Received — "+req.projectName)+"&body="+encodeURIComponent(body));},800);
+      setTimeout(function(){openMailto(req.email, "Laser Request Received - "+req.projectName, body);},800);
     })();
     setTimeout(function() { setLaserConfetti(false); }, 3000);
     setTimeout(function() {
@@ -3327,7 +3337,7 @@ export default function PrintPortal() {
               </div>}
               {!selReq.fileData&&selReq.fileName&&<div style={{ background:"#162032", border:"1px dashed #334155", borderRadius:8, padding:"10px 14px", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
                 <div><div style={{ fontSize:10, color:"#64748b", marginBottom:2 }}>File not stored (too large or uploaded before v2)</div><div style={{ fontSize:11, color:"#94a3b8" }}>{selReq.fileName}</div></div>
-                <button className="bh" onClick={function(){window.open("mailto:"+selReq.email+"?subject="+encodeURIComponent("Re: "+selReq.projectName+" - Please resend file")+"&body="+encodeURIComponent("Hi "+selReq.teacherName+",\nCould you please resend your file "+selReq.fileName+" so we can start your print?\n\nThanks,\nPrint Lab"));}} style={{ background:"#1e293b", color:"#94a3b8", border:"1px solid #334155", borderRadius:6, padding:"6px 12px", fontSize:10, cursor:"pointer", fontFamily:"inherit" }}>Request file</button>
+                <button className="bh" onClick={function(){openMailto(selReq.email, "Re: "+selReq.projectName+" - Please resend file", "Hi "+selReq.teacherName+",\nCould you please resend your file "+selReq.fileName+" so we can start your print?\n\nThanks,\nPrint Lab");}} style={{ background:"#1e293b", color:"#94a3b8", border:"1px solid #334155", borderRadius:6, padding:"6px 12px", fontSize:10, cursor:"pointer", fontFamily:"inherit" }}>Request file</button>
               </div>}
               {(function(){
                 var check = selReq.stlStats && selReq.status==="Queued" ? checkFilamentSufficiency(inv, selReq) : null;
