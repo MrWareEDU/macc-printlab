@@ -10,6 +10,7 @@ var SK = "pl_settings_v1";
 var TK = "pl_templates_v1";
 var UK = "pl_user_prefs_v1"; // stores returning user name/email/dept
 var LIK = "pl_laser_inv_v1";
+var CK = "pl_cad_bookings_v1"; // CAD session bookings
 
 // ─── Storage abstraction (localStorage now, Supabase when configured) ──────────
 var _sb = null; // Supabase client, set by initSupabase()
@@ -130,6 +131,8 @@ async function loadTemplates() { return (await sget(TK)) || []; }
 async function saveTemplates(t) { await sset(TK, t); }
 async function loadLaserInv() { return (await sget(LIK)) || buildDefaultLaserInv(); }
 async function saveLaserInv(i) { await sset(LIK, i); }
+async function loadCadBookings() { return (await sget(CK)) || []; }
+async function saveCadBookings(b) { await sset(CK, b); }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 var SPOOL_G = 1000;
@@ -145,6 +148,45 @@ function hexToRgb(hex) {
   var b = parseInt(hex.slice(5,7),16);
   return r+","+g+","+b;
 }
+
+// ─── CAD Services Constants ───────────────────────────────────────────────────
+var CAD_HELP_TYPES = [
+  { id:"file-prep",   label:"File Preparation",        emoji:"📁", desc:"Get a file ready to print — repair, scale, orient, or export correctly." },
+  { id:"tinkercad",  label:"Tinkercad Guidance",       emoji:"🧊", desc:"Hands-on help designing in Tinkercad — shapes, joins, text, exporting." },
+  { id:"fusion360",  label:"Fusion 360 Assistance",    emoji:"⚙️",  desc:"Parametric modelling, sketches, extrusions, assemblies." },
+  { id:"bambu",      label:"Bambu Studio / Slicing",   emoji:"🖨️", desc:"Slicer settings, support placement, print quality troubleshooting." },
+  { id:"inkscape",   label:"Inkscape / SVG Design",    emoji:"✏️",  desc:"Vector design for laser cutting — paths, fills, dimensions." },
+  { id:"scratch",    label:"Design from Scratch",      emoji:"💡", desc:"You have an idea — we help you model it from nothing." },
+  { id:"repair",     label:"Model Repair",             emoji:"🔧", desc:"Fix broken STLs, non-manifold geometry, or thin walls." },
+  { id:"other",      label:"Other / Not Sure",         emoji:"❓", desc:"Tell us what you need and we'll figure it out together." }
+];
+
+var CAD_SKILL_LEVELS = [
+  { id:"beginner",    label:"Complete Beginner",   desc:"Never used CAD software before" },
+  { id:"some",        label:"Some Experience",     desc:"Tried it a few times, need guidance" },
+  { id:"confident",   label:"Fairly Confident",    desc:"Can do basics, need help with specific things" }
+];
+
+var CAD_DURATIONS = [
+  { id:30,  label:"30 minutes", desc:"Quick help or specific question" },
+  { id:60,  label:"1 hour",     desc:"Full walkthrough or design session" },
+  { id:120, label:"2 hours",    desc:"Extended project session" }
+];
+
+var CAD_SESSION_TYPES = [
+  { id:"in-person", label:"In Person",    emoji:"🏫", desc:"Meet in the Print Lab during available times" },
+  { id:"remote",    label:"Google Meet",  emoji:"💻", desc:"Screen share session — great for software help" }
+];
+
+var CAD_TIME_PREFS = ["Morning (before 10am)", "Recess", "Lunch", "After school"];
+var CAD_DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday"];
+
+var CAD_STATUS_INFO = {
+  Pending:   { color:"#94a3b8", bg:"rgba(148,163,184,0.08)", label:"Awaiting Review",   icon:"⏸" },
+  Scheduled: { color:"#3b82f6", bg:"rgba(59,130,246,0.08)",  label:"Session Scheduled", icon:"📅" },
+  Completed: { color:"#22c55e", bg:"rgba(34,197,94,0.08)",   label:"Completed",         icon:"✅" },
+  Cancelled: { color:"#64748b", bg:"rgba(100,116,139,0.08)", label:"Cancelled",         icon:"✕" }
+};
 // ─── NSW NESA Key Learning Areas ─────────────────────────────────────────────
 var KLA_OPTIONS = [
   { id:"eng",   label:"English",              emoji:"📖", color:"#3b82f6" },
@@ -1878,13 +1920,33 @@ function LaserWizard({ form, setForm, step, setStep, submitted, confetti, laserF
       <Card title="Your details">
         <div className="g2s">
           <div><Lbl>Your name</Lbl><input value={form.teacherName} placeholder="e.g. Ms. Johnson" onChange={function(e){setForm(function(f){return Object.assign({},f,{teacherName:e.target.value});});}} style={baseInput}/></div>
-          <div><Lbl>School email</Lbl><input value={form.email} placeholder="you@macc.nsw.edu.au" onChange={function(e){setForm(function(f){return Object.assign({},f,{email:e.target.value});});}} style={baseInput}/></div>
+          <div><Lbl>School email</Lbl><input value={form.email} placeholder="you@macc.nsw.edu.au" onChange={function(e){setForm(function(f){return Object.assign({},f,{email:e.target.value});});}} style={baseInput}/><div style={{ fontSize:10, color:"#64748b", marginTop:4 }}>We'll email you when your job is ready</div></div>
         </div>
-        <div><Lbl>Department</Lbl>
-          <select value={form.department} onChange={function(e){setForm(function(f){return Object.assign({},f,{department:e.target.value});});}} style={selectStyle}>
-            <option value="">— Select your department —</option>
-            {DEPARTMENTS.map(function(d){return <option key={d} value={d}>{d}</option>;})}
-          </select>
+        <div style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 12px", background:"rgba(239,68,68,0.05)", border:"1px solid rgba(239,68,68,0.15)", borderRadius:8, cursor:"pointer" }} onClick={function(){setForm(function(f){return Object.assign({},f,{priority:!f.priority});});}}>
+          <input type="checkbox" checked={!!form.priority} onChange={function(){}} style={{ width:16, height:16, accentColor:"#ef4444", cursor:"pointer" }}/>
+          <div><div style={{ fontSize:12, fontWeight:500, color:form.priority?"#fca5a5":"#94a3b8" }}>Mark as Urgent</div><div style={{ fontSize:10, color:"#64748b" }}>Flags this job for priority attention in the admin queue</div></div>
+        </div>
+        <div>
+          <Lbl>Key Learning Area</Lbl>
+          <div style={{ display:"flex", flexWrap:"wrap", gap:7, marginTop:2 }}>
+            {KLA_OPTIONS.map(function(k){
+              var active=form.kla===k.id;
+              return <button key={k.id} type="button" onClick={function(){
+                setForm(function(f){
+                  var nextKla=active?"":k.id;
+                  var klaToDepmap={"eng":"English","maths":"Mathematics","sci":"Science","hsie":"HSIE","tas":"TAS","pdhpe":"PDHPE","capa":"CAPA","lang":"Modern Languages","other":"Other"};
+                  return Object.assign({},f,{kla:nextKla,department:nextKla?klaToDepmap[nextKla]||f.department:f.department});
+                });
+              }} className="bh" style={{ display:"flex", alignItems:"center", gap:6, background:active?"rgba("+hexToRgb(k.color)+",0.15)":"#162032", border:"1px solid "+(active?k.color:"#334155"), borderRadius:8, padding:"7px 12px", fontFamily:"inherit", fontSize:12, cursor:"pointer", color:active?k.color:"#64748b", transition:"all .15s" }}>
+                <span style={{ fontSize:14 }}>{k.emoji}</span>{k.label}
+              </button>;
+            })}
+          </div>
+          {form.kla&&<div style={{ marginTop:10 }}>
+            <Lbl>Syllabus outcome or cross-curriculum link (optional)</Lbl>
+            <input value={form.syllabusOutcome||""} onChange={function(e){setForm(function(f){return Object.assign({},f,{syllabusOutcome:e.target.value});});}} placeholder="e.g. SC4-4WS — Working scientifically" style={Object.assign({},baseInput,{fontSize:12})}/>
+            <div style={{ fontSize:10, color:"#475569", marginTop:4 }}>Helps justify the job for curriculum reporting</div>
+          </div>}
         </div>
       </Card>
 
@@ -1993,14 +2055,14 @@ function LaserWizard({ form, setForm, step, setStep, submitted, confetti, laserF
               <button className="bh" onClick={function(){setForm(function(f){
                         var nq=Math.max(1,f.quantity-1);
                         var due=f.dueDate;
-                        if(stlStats){try{var rd=estimateReadyDate(requests,{stlStats:stlStats,quantity:nq});var buf=new Date(rd);var a=0;while(a<2){buf.setDate(buf.getDate()+1);if(buf.getDay()!==0&&buf.getDay()!==6)a++;}due=buf.toISOString().split("T")[0];}catch(e){}}
+                        try{var area=(parseFloat(f.designWidth||100))*(parseFloat(f.designHeight||100));var factor=f.jobType==="Engrave"?1.0:f.jobType==="Cut"?0.4:1.5;var hrs=Math.max(5,Math.round((area/(800*60))*60*factor*nq))/60;var rd=estimateReadyDate(requests,{stlStats:{estimatedHours:hrs},quantity:1});var buf=new Date(rd);var a=0;while(a<2){buf.setDate(buf.getDate()+1);if(buf.getDay()!==0&&buf.getDay()!==6)a++;}due=buf.toISOString().split("T")[0];}catch(e){}
                         return Object.assign({},f,{quantity:nq,dueDate:due});
                       });}} style={{ width:36, height:36, border:"1px solid #111827", borderRadius:6, background:"#162032", color:"#e2e8f0", fontSize:18, cursor:"pointer", fontFamily:"inherit" }}>-</button>
               <div style={{ flex:1, textAlign:"center", fontFamily:"'Syne',sans-serif", fontSize:22, fontWeight:900, color:"#a855f7" }}>{form.quantity}</div>
               <button className="bh" onClick={function(){setForm(function(f){
                         var nq=Math.min(50,f.quantity+1);
                         var due=f.dueDate;
-                        if(stlStats){try{var rd=estimateReadyDate(requests,{stlStats:stlStats,quantity:nq});var buf=new Date(rd);var a=0;while(a<2){buf.setDate(buf.getDate()+1);if(buf.getDay()!==0&&buf.getDay()!==6)a++;}due=buf.toISOString().split("T")[0];}catch(e){}}
+                        try{var area=(parseFloat(f.designWidth||100))*(parseFloat(f.designHeight||100));var factor=f.jobType==="Engrave"?1.0:f.jobType==="Cut"?0.4:1.5;var hrs=Math.max(5,Math.round((area/(800*60))*60*factor*nq))/60;var rd=estimateReadyDate(requests,{stlStats:{estimatedHours:hrs},quantity:1});var buf=new Date(rd);var a=0;while(a<2){buf.setDate(buf.getDate()+1);if(buf.getDay()!==0&&buf.getDay()!==6)a++;}due=buf.toISOString().split("T")[0];}catch(e){}
                         return Object.assign({},f,{quantity:nq,dueDate:due});
                       });}} style={{ width:36, height:36, border:"1px solid #111827", borderRadius:6, background:"#162032", color:"#e2e8f0", fontSize:18, cursor:"pointer", fontFamily:"inherit" }}>+</button>
             </div>
@@ -2050,12 +2112,16 @@ function LaserWizard({ form, setForm, step, setStep, submitted, confetti, laserF
     {/* ── Step 2: Review ── */}
     {step===2&&<div className="fu" style={{ display:"flex", flexDirection:"column", gap:14 }}>
       <Card title="Summary — does everything look right?">
+        {form.priority&&<div style={{ background:"rgba(239,68,68,0.08)", border:"1px solid rgba(239,68,68,0.25)", borderRadius:8, padding:"8px 14px", display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
+          <span style={{ fontSize:16 }}>⚡</span>
+          <span style={{ fontSize:12, color:"#fca5a5", fontWeight:500 }}>Marked as Urgent — admin will prioritise this job</span>
+        </div>}
         <div className="g2s" style={{ gap:10 }}>
-          {[["Name",form.teacherName],["Email",form.email],["KLA",(function(){var k=KLA_OPTIONS.filter(function(x){return x.id===form.kla;})[0];return k?k.emoji+" "+k.label:"Not specified";})()],
+          {[["Name",form.teacherName],["Email",form.email],
             ["Project",form.projectName],["Job Type",form.jobType],["Material",selMat?selMat.name:"—"],
             ["Thickness",form.thickness?form.thickness+"mm":"N/A (engrave only)"],
-            ["Laser",selJob&&selJob.needsLaser?"40W H2D":"N/A — "+form.jobType],
-            ["Quantity","x"+form.quantity],["Due Date",form.dueDate?new Date(form.dueDate+"T00:00:00").toLocaleDateString("en-AU",{weekday:"long",day:"numeric",month:"long"}):"—"],
+            ["Quantity","x"+form.quantity],
+            ["Due Date",form.dueDate?new Date(form.dueDate+"T00:00:00").toLocaleDateString("en-AU",{weekday:"long",day:"numeric",month:"long"}):"—"],
             ["Design File",laserFile?laserFile.name:"—"],["Source URL",form.sourceUrl||"Not provided"]
           ].map(function(pair){
             return <div key={pair[0]} style={{ background:"#162032", borderRadius:8, padding:"10px 12px" }}>
@@ -2064,6 +2130,10 @@ function LaserWizard({ form, setForm, step, setStep, submitted, confetti, laserF
             </div>;
           })}
         </div>
+        {form.kla&&(function(){var klaObj=KLA_OPTIONS.filter(function(k){return k.id===form.kla;})[0];return klaObj?<div style={{ background:"rgba("+hexToRgb(klaObj.color)+",0.08)", border:"1px solid "+klaObj.color+"33", borderRadius:8, padding:"10px 12px", display:"flex", alignItems:"center", gap:10 }}>
+          <span style={{ fontSize:20 }}>{klaObj.emoji}</span>
+          <div><div style={{ fontSize:11, fontWeight:500, color:klaObj.color }}>{klaObj.label}</div>{form.syllabusOutcome&&<div style={{ fontSize:11, color:"#64748b", marginTop:2 }}>{form.syllabusOutcome}</div>}</div>
+        </div>:null;})()}
         {form.notes&&<div style={{ background:"#162032", borderRadius:8, padding:"10px 12px" }}><div style={{ fontSize:10, color:"#64748b", marginBottom:3 }}>Notes</div><div style={{ fontSize:12, color:"#94a3b8", lineHeight:1.7 }}>{form.notes}</div></div>}
         {estTime&&<div style={{ background:"rgba(168,85,247,0.06)", border:"1px solid rgba(168,85,247,0.15)", borderRadius:8, padding:12, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
           <div><div style={{ fontSize:10, color:"#a855f7", marginBottom:2 }}>Estimated laser time</div><div style={{ fontSize:20, fontFamily:"'Syne',sans-serif", fontWeight:900, color:"#d8b4fe" }}>{estTime}</div></div>
@@ -2573,6 +2643,357 @@ function LaserInventoryPage({ laserInv, setLaserInv }) {
   </div>;
 }
 
+// ─── CAD Booking Wizard ───────────────────────────────────────────────────────
+function CadBookingWizard({ onSubmit, onBack, requests }) {
+  var UK_LOCAL = "pl_user_prefs_v1";
+  function getSaved() { try { return JSON.parse(localStorage.getItem(UK_LOCAL)||"null")||{}; } catch(e){return {};} }
+  var saved = getSaved();
+
+  var sform = useState({
+    teacherName: saved.teacherName||"", email: saved.email||"", kla:"", syllabusOutcome:"",
+    helpType:"", skillLevel:"", software:"", projectGoal:"", extraContext:"",
+    sessionType:"in-person", duration:60, preferredDays:[], preferredTimes:[], urgency:"", notes:""
+  });
+  var form=sform[0], setForm=sform[1];
+  var sstep=useState(0); var step=sstep[0],setStep=sstep[1];
+  var sdone=useState(false); var done=sdone[0],setDone=sdone[1];
+  var sconf=useState(false); var showConfetti=sconf[0],setShowConfetti=sconf[1];
+
+  function upd(k,v){setForm(function(f){return Object.assign({},f,{[k]:v});});}
+  function toggleArr(k,v){setForm(function(f){var arr=f[k]||[];var next=arr.indexOf(v)>=0?arr.filter(function(x){return x!==v;}):arr.concat([v]);return Object.assign({},f,{[k]:next});});}
+
+  var step0ok = form.teacherName&&form.email&&form.helpType;
+  var step1ok = form.projectGoal&&form.skillLevel;
+  var step2ok = form.sessionType&&form.duration&&form.preferredDays.length>0;
+
+  function submit() {
+    var booking = Object.assign({},form,{
+      id:"CAD-"+Date.now(), status:"Pending",
+      submittedAt:new Date().toISOString(), log:[],
+      department:(function(){var klaToDepmap={"eng":"English","maths":"Mathematics","sci":"Science","hsie":"HSIE","tas":"TAS","pdhpe":"PDHPE","capa":"CAPA","lang":"Modern Languages","other":"Other"};return form.kla?klaToDepmap[form.kla]||"":"";}())
+    });
+    onSubmit(booking);
+    setShowConfetti(true);setDone(true);
+    setTimeout(function(){setShowConfetti(false);},3000);
+  }
+
+  var klaObj = KLA_OPTIONS.filter(function(k){return k.id===form.kla;})[0];
+  var helpObj = CAD_HELP_TYPES.filter(function(h){return h.id===form.helpType;})[0];
+  var durObj = CAD_DURATIONS.filter(function(d){return d.id===form.duration;})[0];
+  var sessObj = CAD_SESSION_TYPES.filter(function(s){return s.id===form.sessionType;})[0];
+
+  if (done) return <div style={{ textAlign:"center", padding:"80px 0", maxWidth:720, margin:"0 auto" }}>
+    {showConfetti&&<Confetti/>}
+    <div style={{ fontSize:72, marginBottom:16 }}>📅</div>
+    <div style={{ fontSize:28, fontWeight:700, color:"#38bdf8", marginBottom:10 }}>Session Requested!</div>
+    <div style={{ fontSize:14, color:"#64748b", lineHeight:1.8, marginBottom:24 }}>The Print Lab team will review your request and propose a time within 2 school days.<br/>Check your email for a confirmation and your My Status tab for updates.</div>
+    <button onClick={onBack} className="bh" style={{ background:"rgba(14,165,233,0.12)", color:"#38bdf8", border:"1px solid rgba(14,165,233,0.3)", borderRadius:8, padding:"12px 28px", fontFamily:"inherit", fontSize:13, cursor:"pointer", fontWeight:500 }}>Back to services</button>
+  </div>;
+
+  return <div style={{ maxWidth:720, margin:"0 auto" }}>
+    <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:20 }}>
+      <button className="bh" onClick={step>0?function(){setStep(step-1);}:onBack} style={{ background:"transparent", color:"#64748b", border:"1px solid #334155", borderRadius:7, padding:"6px 14px", fontFamily:"inherit", fontSize:11, cursor:"pointer" }}>← {step===0?"Back":"Previous"}</button>
+      <div style={{ fontSize:12, color:"#64748b" }}>CAD Services / Book a Session</div>
+    </div>
+
+    <div style={{ display:"flex", alignItems:"center", gap:14, marginBottom:20, background:"rgba(14,165,233,0.06)", border:"1px solid rgba(14,165,233,0.15)", borderRadius:12, padding:"14px 18px" }}>
+      <div style={{ width:44, height:44, borderRadius:10, background:"rgba(14,165,233,0.12)", border:"1px solid rgba(14,165,233,0.25)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:22, flexShrink:0 }}>📐</div>
+      <div>
+        <div style={{ fontSize:16, fontWeight:600, color:"#38bdf8" }}>Book a CAD Session</div>
+        <div style={{ fontSize:11, color:"#64748b" }}>Tell us what you need — we'll find a time that works</div>
+      </div>
+    </div>
+
+    <StepBar step={step} steps={["What you need","Your project","When & how"]}/>
+
+    {/* ── Step 0: Who you are + what kind of help ── */}
+    {step===0&&<div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+      <Card title="Your details">
+        <div className="g2s">
+          <div><Lbl>Your name *</Lbl><input value={form.teacherName} placeholder="e.g. Ms. Johnson" onChange={function(e){upd("teacherName",e.target.value);}} style={baseInput}/></div>
+          <div><Lbl>School email *</Lbl><input value={form.email} placeholder="you@macc.nsw.edu.au" onChange={function(e){upd("email",e.target.value);}} style={baseInput}/><div style={{ fontSize:10, color:"#64748b", marginTop:4 }}>We'll send session confirmations here</div></div>
+        </div>
+        <div>
+          <Lbl>Key Learning Area (optional)</Lbl>
+          <div style={{ display:"flex", flexWrap:"wrap", gap:7, marginTop:2 }}>
+            {KLA_OPTIONS.map(function(k){var active=form.kla===k.id;return <button key={k.id} type="button" onClick={function(){upd("kla",active?"":k.id);}} className="bh" style={{ display:"flex", alignItems:"center", gap:6, background:active?"rgba("+hexToRgb(k.color)+",0.15)":"#162032", border:"1px solid "+(active?k.color:"#334155"), borderRadius:8, padding:"6px 11px", fontFamily:"inherit", fontSize:12, cursor:"pointer", color:active?k.color:"#64748b", transition:"all .15s" }}><span style={{ fontSize:13 }}>{k.emoji}</span>{k.label}</button>;})}
+          </div>
+          {form.kla&&<input value={form.syllabusOutcome} onChange={function(e){upd("syllabusOutcome",e.target.value);}} placeholder="e.g. SC4-4WS — Working scientifically (optional)" style={Object.assign({},baseInput,{fontSize:12,marginTop:8})}/>}
+        </div>
+      </Card>
+
+      <Card title="What kind of help do you need? *">
+        <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+          {CAD_HELP_TYPES.map(function(h){var sel=form.helpType===h.id;return <div key={h.id} className="rh" onClick={function(){upd("helpType",h.id);}} style={{ display:"flex", alignItems:"center", gap:12, padding:"12px 14px", border:"2px solid "+(sel?"#0ea5e9":"#334155"), borderRadius:10, background:sel?"rgba(14,165,233,0.08)":"#162032", cursor:"pointer", transition:"all .15s" }}>
+            <div style={{ fontSize:24, flexShrink:0 }}>{h.emoji}</div>
+            <div style={{ flex:1 }}><div style={{ fontSize:13, fontWeight:500, color:sel?"#38bdf8":"#e2e8f0" }}>{h.label}</div><div style={{ fontSize:11, color:"#64748b", marginTop:2 }}>{h.desc}</div></div>
+            {sel&&<div style={{ width:18, height:18, borderRadius:"50%", background:"#0ea5e9", display:"flex", alignItems:"center", justifyContent:"center", fontSize:10, color:"#fff", flexShrink:0 }}>✓</div>}
+          </div>;})}
+        </div>
+      </Card>
+
+      <NavBtns onBack={onBack} onNext={function(){setStep(1);}} disabled={!step0ok} label="Next — Tell us about your project"/>
+    </div>}
+
+    {/* ── Step 1: Project details ── */}
+    {step===1&&<div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+      <Card title="Your project">
+        <div><Lbl>What are you trying to achieve? *</Lbl>
+          <textarea value={form.projectGoal} rows={3} placeholder="e.g. I want to design a bridge for a Year 9 Science project. I have a rough sketch but don't know how to model it in Tinkercad." onChange={function(e){upd("projectGoal",e.target.value);}} style={Object.assign({},baseInput,{resize:"vertical",lineHeight:1.7})}/>
+        </div>
+        <div><Lbl>Your CAD experience level *</Lbl>
+          <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+            {CAD_SKILL_LEVELS.map(function(s){var sel=form.skillLevel===s.id;return <div key={s.id} className="rh" onClick={function(){upd("skillLevel",s.id);}} style={{ display:"flex", alignItems:"center", gap:12, padding:"10px 14px", border:"2px solid "+(sel?"#0ea5e9":"#334155"), borderRadius:10, background:sel?"rgba(14,165,233,0.08)":"#162032", cursor:"pointer", transition:"all .15s" }}>
+              <div style={{ flex:1 }}><div style={{ fontSize:13, fontWeight:500, color:sel?"#38bdf8":"#e2e8f0" }}>{s.label}</div><div style={{ fontSize:11, color:"#64748b", marginTop:1 }}>{s.desc}</div></div>
+              {sel&&<div style={{ width:18, height:18, borderRadius:"50%", background:"#0ea5e9", display:"flex", alignItems:"center", justifyContent:"center", fontSize:10, color:"#fff", flexShrink:0 }}>✓</div>}
+            </div>;})}
+          </div>
+        </div>
+        <div><Lbl>Software you want to use (optional)</Lbl>
+          <div style={{ display:"flex", flexWrap:"wrap", gap:8 }}>
+            {["Tinkercad","Fusion 360","Bambu Studio","Inkscape","Not sure"].map(function(sw){var sel=form.software===sw;return <button key={sw} type="button" onClick={function(){upd("software",sel?"":sw);}} className="bh" style={{ background:sel?"rgba(14,165,233,0.15)":"#162032", border:"1px solid "+(sel?"#0ea5e9":"#334155"), borderRadius:7, padding:"6px 14px", fontFamily:"inherit", fontSize:12, cursor:"pointer", color:sel?"#38bdf8":"#64748b" }}>{sw}</button>;})}
+          </div>
+        </div>
+        <div><Lbl>Anything else we should know? (optional)</Lbl>
+          <textarea value={form.extraContext} rows={2} placeholder="e.g. I have an STL file that won't slice correctly, or I need this done by end of term..." onChange={function(e){upd("extraContext",e.target.value);}} style={Object.assign({},baseInput,{resize:"vertical",lineHeight:1.7})}/>
+        </div>
+      </Card>
+      <NavBtns onBack={function(){setStep(0);}} onNext={function(){setStep(2);}} disabled={!step1ok} label="Next — Choose a time"/>
+    </div>}
+
+    {/* ── Step 2: Session preferences ── */}
+    {step===2&&<div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+      <Card title="Session type">
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+          {CAD_SESSION_TYPES.map(function(s){var sel=form.sessionType===s.id;return <div key={s.id} className="rh" onClick={function(){upd("sessionType",s.id);}} style={{ padding:"14px", border:"2px solid "+(sel?"#0ea5e9":"#334155"), borderRadius:10, background:sel?"rgba(14,165,233,0.08)":"#162032", cursor:"pointer", textAlign:"center", transition:"all .15s" }}>
+            <div style={{ fontSize:28, marginBottom:6 }}>{s.emoji}</div>
+            <div style={{ fontSize:13, fontWeight:500, color:sel?"#38bdf8":"#e2e8f0" }}>{s.label}</div>
+            <div style={{ fontSize:10, color:"#64748b", marginTop:4, lineHeight:1.5 }}>{s.desc}</div>
+            {sel&&<div style={{ marginTop:8, width:18, height:18, borderRadius:"50%", background:"#0ea5e9", display:"flex", alignItems:"center", justifyContent:"center", fontSize:10, color:"#fff", margin:"8px auto 0" }}>✓</div>}
+          </div>;})}
+        </div>
+      </Card>
+
+      <Card title="How long?">
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:10 }}>
+          {CAD_DURATIONS.map(function(d){var sel=form.duration===d.id;return <div key={d.id} className="rh" onClick={function(){upd("duration",d.id);}} style={{ padding:"12px", border:"2px solid "+(sel?"#0ea5e9":"#334155"), borderRadius:10, background:sel?"rgba(14,165,233,0.08)":"#162032", cursor:"pointer", textAlign:"center", transition:"all .15s" }}>
+            <div style={{ fontSize:15, fontWeight:600, color:sel?"#38bdf8":"#e2e8f0" }}>{d.label}</div>
+            <div style={{ fontSize:10, color:"#64748b", marginTop:4 }}>{d.desc}</div>
+          </div>;})}
+        </div>
+      </Card>
+
+      <Card title="When works for you? *">
+        <Lbl>Preferred days (select all that apply)</Lbl>
+        <div style={{ display:"flex", flexWrap:"wrap", gap:8, marginBottom:14 }}>
+          {CAD_DAYS.map(function(d){var sel=(form.preferredDays||[]).indexOf(d)>=0;return <button key={d} type="button" onClick={function(){toggleArr("preferredDays",d);}} className="bh" style={{ background:sel?"rgba(14,165,233,0.15)":"#162032", border:"1px solid "+(sel?"#0ea5e9":"#334155"), borderRadius:7, padding:"7px 14px", fontFamily:"inherit", fontSize:12, cursor:"pointer", color:sel?"#38bdf8":"#64748b", fontWeight:sel?500:400 }}>{d}</button>;})}
+        </div>
+        <Lbl>Preferred time of day (select all that apply)</Lbl>
+        <div style={{ display:"flex", flexWrap:"wrap", gap:8 }}>
+          {CAD_TIME_PREFS.map(function(t){var sel=(form.preferredTimes||[]).indexOf(t)>=0;return <button key={t} type="button" onClick={function(){toggleArr("preferredTimes",t);}} className="bh" style={{ background:sel?"rgba(14,165,233,0.15)":"#162032", border:"1px solid "+(sel?"#0ea5e9":"#334155"), borderRadius:7, padding:"7px 14px", fontFamily:"inherit", fontSize:12, cursor:"pointer", color:sel?"#38bdf8":"#64748b", fontWeight:sel?500:400 }}>{t}</button>;})}
+        </div>
+      </Card>
+
+      <Card title="Review your booking request">
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+          {[["\uD83D\uDC64 Teacher",form.teacherName],["📧 Email",form.email],
+            [helpObj?helpObj.emoji+" Help":"🔧 Help",helpObj?helpObj.label:"—"],
+            ["\uD83C\uDFAF Skill",CAD_SKILL_LEVELS.filter(function(s){return s.id===form.skillLevel;})[0]?CAD_SKILL_LEVELS.filter(function(s){return s.id===form.skillLevel;})[0].label:"—"],
+            [sessObj?sessObj.emoji+" Session":"📍 Session",sessObj?sessObj.label:"—"],
+            ["⏱ Duration",durObj?durObj.label:"—"],
+            ["📅 Days",(form.preferredDays||[]).join(", ")||"—"],
+            ["⏰ Times",(form.preferredTimes||[]).join(", ")||"—"]
+          ].map(function(pair){return <div key={pair[0]} style={{ background:"#162032", borderRadius:7, padding:"8px 11px" }}>
+            <div style={{ fontSize:9, color:"#64748b", marginBottom:2 }}>{pair[0]}</div>
+            <div style={{ fontSize:12, color:"#94a3b8" }}>{pair[1]}</div>
+          </div>;})}
+        </div>
+        {form.projectGoal&&<div style={{ background:"#162032", borderRadius:7, padding:"10px 12px", marginTop:8 }}>
+          <div style={{ fontSize:9, color:"#64748b", marginBottom:3 }}>PROJECT GOAL</div>
+          <div style={{ fontSize:12, color:"#94a3b8", lineHeight:1.7 }}>{form.projectGoal}</div>
+        </div>}
+        {klaObj&&<div style={{ background:"rgba("+hexToRgb(klaObj.color)+",0.08)", border:"1px solid "+klaObj.color+"33", borderRadius:7, padding:"8px 12px", marginTop:8, display:"flex", alignItems:"center", gap:8 }}>
+          <span style={{ fontSize:16 }}>{klaObj.emoji}</span>
+          <div style={{ fontSize:12, color:klaObj.color, fontWeight:500 }}>{klaObj.label}{form.syllabusOutcome&&<span style={{ color:"#64748b", fontWeight:400 }}> — {form.syllabusOutcome}</span>}</div>
+        </div>}
+        <div style={{ marginTop:10, background:"rgba(14,165,233,0.06)", border:"1px solid rgba(14,165,233,0.2)", borderRadius:8, padding:"10px 14px", fontSize:11, color:"#64748b", lineHeight:1.8 }}>
+          After submitting, the Print Lab team will review your request and propose a specific date and time via email within 2 school days.
+        </div>
+      </Card>
+
+      <div style={{ display:"flex", gap:10 }}>
+        <button className="bh" onClick={function(){setStep(1);}} style={{ flex:"0 0 auto", background:"transparent", color:"#64748b", border:"1px solid #334155", borderRadius:8, padding:"12px 20px", fontFamily:"inherit", fontSize:11, cursor:"pointer" }}>← Edit</button>
+        <button className="bh" onClick={submit} disabled={!step2ok} style={{ flex:1, background:step2ok?"#0ea5e9":"#1e293b", color:step2ok?"#fff":"#64748b", border:"none", borderRadius:8, padding:"14px 0", fontFamily:"inherit", fontSize:13, cursor:step2ok?"pointer":"not-allowed", fontWeight:500 }}>📅 Submit Booking Request</button>
+      </div>
+    </div>}
+  </div>;
+}
+
+// ─── CAD Admin Page ───────────────────────────────────────────────────────────
+function CadAdminPage({ bookings, admin, onSchedule, onComplete, onCancel, onDelete }) {
+  var sfilter=useState("All"); var filter=sfilter[0],setFilter=sfilter[1];
+  var ssel=useState(null); var selB=ssel[0],setSelB=ssel[1];
+  var sdate=useState(""); var propDate=sdate[0],setPropDate=sdate[1];
+  var stime=useState("09:00"); var propTime=stime[0],setPropTime=stime[1];
+  var snote=useState(""); var adminNote=snote[0],setAdminNote=snote[1];
+  var ssched=useState(false); var showSched=ssched[0],setShowSched=ssched[1];
+
+  var pending=bookings.filter(function(b){return b.status==="Pending";}).length;
+  var scheduled=bookings.filter(function(b){return b.status==="Scheduled";}).length;
+  var filtered=filter==="All"?bookings:bookings.filter(function(b){return b.status===filter;});
+
+  function syncSel(updated){if(selB){var f=updated.filter(function(b){return b.id===selB.id;})[0];if(f)setSelB(f);}}
+
+  function doSchedule(){
+    if(!propDate)return;
+    var dt=propDate+"T"+propTime+":00";
+    onSchedule(selB.id,dt,adminNote);
+    setShowSched(false);setPropDate("");setPropTime("09:00");setAdminNote("");
+  }
+
+  var statuses=["All","Pending","Scheduled","Completed","Cancelled"];
+
+  return <div>
+    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:20 }}>
+      <div>
+        <div style={{ fontSize:22, fontWeight:600 }}>CAD Sessions</div>
+        <div style={{ fontSize:12, color:"#64748b", marginTop:2 }}>{pending} pending · {scheduled} upcoming · {bookings.length} total</div>
+      </div>
+    </div>
+
+    {/* Upcoming sessions summary */}
+    {bookings.filter(function(b){return b.status==="Scheduled"&&b.scheduledAt;}).sort(function(a,b){return new Date(a.scheduledAt)-new Date(b.scheduledAt);}).slice(0,3).length>0&&<div style={{ marginBottom:20 }}>
+      <div style={{ fontSize:12, color:"#64748b", fontWeight:500, marginBottom:8 }}>UPCOMING SESSIONS</div>
+      <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+        {bookings.filter(function(b){return b.status==="Scheduled"&&b.scheduledAt;}).sort(function(a,b){return new Date(a.scheduledAt)-new Date(b.scheduledAt);}).slice(0,5).map(function(b){
+          var d=new Date(b.scheduledAt);var helpObj=CAD_HELP_TYPES.filter(function(h){return h.id===b.helpType;})[0];
+          return <div key={b.id} onClick={function(){setSelB(b);}} className="rh" style={{ background:"rgba(14,165,233,0.06)", border:"1px solid rgba(14,165,233,0.2)", borderRadius:10, padding:"12px 16px", display:"flex", alignItems:"center", gap:14, cursor:"pointer" }}>
+            <div style={{ textAlign:"center", width:52, flexShrink:0 }}>
+              <div style={{ fontFamily:"'DM Mono',monospace", fontSize:18, fontWeight:700, color:"#38bdf8", lineHeight:1 }}>{d.getDate()}</div>
+              <div style={{ fontSize:9, color:"#64748b" }}>{d.toLocaleDateString("en-AU",{month:"short"}).toUpperCase()}</div>
+              <div style={{ fontSize:10, color:"#94a3b8", marginTop:2 }}>{d.toLocaleTimeString("en-AU",{hour:"2-digit",minute:"2-digit"})}</div>
+            </div>
+            <div style={{ flex:1, minWidth:0 }}>
+              <div style={{ fontSize:13, color:"#f1f5f9", fontWeight:500 }}>{b.teacherName}</div>
+              <div style={{ fontSize:11, color:"#64748b" }}>{helpObj?helpObj.emoji+" "+helpObj.label:b.helpType} · {b.sessionType==="remote"?"Google Meet":"In Person"} · {b.duration}min</div>
+            </div>
+            <div style={{ fontSize:10, color:"#38bdf8", flexShrink:0 }}>📅</div>
+          </div>;
+        })}
+      </div>
+    </div>}
+
+    <div style={{ display:"flex", gap:20 }}>
+      {/* List */}
+      <div style={{ flex:1, minWidth:0 }}>
+        <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:12 }}>
+          {statuses.map(function(s){var active=filter===s;var si=CAD_STATUS_INFO[s];var col=si?si.color:"#94a3b8";return <button key={s} className="bh" onClick={function(){setFilter(s);}} style={{ background:active?col:"transparent", color:active?"#fff":col, border:"1px solid "+(active?col:"#334155"), borderRadius:5, padding:"4px 10px", fontFamily:"inherit", fontSize:10, cursor:"pointer" }}>{s}</button>;})}
+        </div>
+        <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+          {filtered.length===0&&<div style={{ textAlign:"center", padding:"40px 0", color:"#475569", fontSize:13 }}>No {filter!=="All"?filter.toLowerCase():""} bookings</div>}
+          {filtered.sort(function(a,b){return new Date(b.submittedAt)-new Date(a.submittedAt);}).map(function(b){
+            var si=CAD_STATUS_INFO[b.status]||CAD_STATUS_INFO.Pending;
+            var helpObj=CAD_HELP_TYPES.filter(function(h){return h.id===b.helpType;})[0];
+            var isSelected=selB&&selB.id===b.id;
+            return <div key={b.id} onClick={function(){setSelB(isSelected?null:b);}} className="rh" style={{ background:isSelected?"rgba(14,165,233,0.05)":"#1e293b", border:"1px solid "+(isSelected?"rgba(14,165,233,0.3)":"#334155"), borderRadius:10, padding:"12px 14px", cursor:"pointer", transition:"all .15s" }}>
+              <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", gap:10 }}>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
+                    {b.priority&&<span style={{ fontSize:9, background:"rgba(239,68,68,0.15)", color:"#fca5a5", borderRadius:3, padding:"2px 6px", fontWeight:600 }}>URGENT</span>}
+                    <div style={{ fontSize:14, fontWeight:500, color:"#f1f5f9" }}>{b.teacherName}</div>
+                  </div>
+                  <div style={{ fontSize:12, color:"#64748b" }}>{helpObj?helpObj.emoji+" "+helpObj.label:b.helpType}</div>
+                  <div style={{ fontSize:11, color:"#475569", marginTop:3 }}>
+                    {b.sessionType==="remote"?"💻 Google Meet":"🏫 In Person"} · {b.duration}min
+                    {b.scheduledAt&&<span style={{ color:"#38bdf8" }}> · {new Date(b.scheduledAt).toLocaleDateString("en-AU",{weekday:"short",day:"numeric",month:"short"})} {new Date(b.scheduledAt).toLocaleTimeString("en-AU",{hour:"2-digit",minute:"2-digit"})}</span>}
+                  </div>
+                  <div style={{ fontSize:10, color:"#334155", marginTop:3 }}>Submitted {new Date(b.submittedAt).toLocaleDateString("en-AU",{day:"numeric",month:"short"})}</div>
+                </div>
+                <span style={{ fontSize:10, background:si.bg, color:si.color, border:"1px solid "+si.color+"44", borderRadius:5, padding:"3px 8px", flexShrink:0, fontWeight:500 }}>{si.icon} {si.label}</span>
+              </div>
+            </div>;
+          })}
+        </div>
+      </div>
+
+      {/* Detail panel */}
+      {selB&&<div style={{ width:340, flexShrink:0, background:"#1e293b", border:"1px solid #334155", borderRadius:12, padding:18, height:"fit-content", position:"sticky", top:20, overflowY:"auto", maxHeight:"80vh" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:14 }}>
+          <div style={{ flex:1, minWidth:0 }}>
+            <div style={{ fontSize:15, fontWeight:600, color:"#f1f5f9", marginBottom:4 }}>{selB.teacherName}</div>
+            <div style={{ fontSize:11, color:"#64748b" }}>{selB.email}</div>
+            <div style={{ fontSize:10, color:"#475569", marginTop:3 }}>
+              {CAD_HELP_TYPES.filter(function(h){return h.id===selB.helpType;})[0]&&(CAD_HELP_TYPES.filter(function(h){return h.id===selB.helpType;})[0].emoji+" "+CAD_HELP_TYPES.filter(function(h){return h.id===selB.helpType;})[0].label)}
+            </div>
+            {selB.kla&&(function(){var k=KLA_OPTIONS.filter(function(x){return x.id===selB.kla;})[0];return k?<div style={{ marginTop:5, display:"inline-flex", alignItems:"center", gap:5, background:"rgba("+hexToRgb(k.color)+",0.1)", border:"1px solid "+k.color+"44", borderRadius:5, padding:"3px 8px" }}><span style={{ fontSize:11 }}>{k.emoji}</span><span style={{ fontSize:10, color:k.color }}>{k.label}</span></div>:null;})()}
+          </div>
+          <button onClick={function(){setSelB(null);}} style={{ background:"none", border:"none", color:"#64748b", cursor:"pointer", fontSize:18 }}>×</button>
+        </div>
+
+        <div style={{ display:"flex", flexDirection:"column", gap:8, marginBottom:14 }}>
+          {selB.projectGoal&&<div style={{ background:"#162032", borderRadius:7, padding:"9px 12px" }}>
+            <div style={{ fontSize:9, color:"#475569", marginBottom:3 }}>PROJECT GOAL</div>
+            <div style={{ fontSize:12, color:"#94a3b8", lineHeight:1.7 }}>{selB.projectGoal}</div>
+          </div>}
+          {selB.extraContext&&<div style={{ background:"#162032", borderRadius:7, padding:"9px 12px" }}>
+            <div style={{ fontSize:9, color:"#475569", marginBottom:3 }}>EXTRA CONTEXT</div>
+            <div style={{ fontSize:12, color:"#94a3b8", lineHeight:1.7 }}>{selB.extraContext}</div>
+          </div>}
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:7 }}>
+            {[["Skill",(CAD_SKILL_LEVELS.filter(function(s){return s.id===selB.skillLevel;})[0]||{label:"—"}).label],["Software",selB.software||"Not specified"],["Type",selB.sessionType==="remote"?"💻 Google Meet":"🏫 In Person"],["Duration",selB.duration+"min"]].map(function(p){return <div key={p[0]} style={{ background:"#162032", borderRadius:7, padding:"8px 10px" }}><div style={{ fontSize:9, color:"#475569", marginBottom:2 }}>{p[0].toUpperCase()}</div><div style={{ fontSize:11, color:"#94a3b8" }}>{p[1]}</div></div>;})}
+          </div>
+          <div style={{ background:"#162032", borderRadius:7, padding:"9px 12px" }}>
+            <div style={{ fontSize:9, color:"#475569", marginBottom:5 }}>AVAILABILITY</div>
+            <div style={{ fontSize:11, color:"#94a3b8" }}>Days: {(selB.preferredDays||[]).join(", ")||"—"}</div>
+            <div style={{ fontSize:11, color:"#94a3b8", marginTop:3 }}>Times: {(selB.preferredTimes||[]).join(", ")||"—"}</div>
+          </div>
+          {selB.scheduledAt&&<div style={{ background:"rgba(14,165,233,0.07)", border:"1px solid rgba(14,165,233,0.25)", borderRadius:8, padding:"10px 12px" }}>
+            <div style={{ fontSize:9, color:"#38bdf8", marginBottom:3 }}>SCHEDULED</div>
+            <div style={{ fontSize:13, color:"#38bdf8", fontWeight:500 }}>{new Date(selB.scheduledAt).toLocaleDateString("en-AU",{weekday:"long",day:"numeric",month:"long"})}</div>
+            <div style={{ fontSize:12, color:"#94a3b8" }}>at {new Date(selB.scheduledAt).toLocaleTimeString("en-AU",{hour:"2-digit",minute:"2-digit"})}</div>
+            {selB.adminNote&&<div style={{ fontSize:11, color:"#64748b", marginTop:4 }}>{selB.adminNote}</div>}
+          </div>}
+        </div>
+
+        {/* Actions */}
+        <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+          {selB.status==="Pending"&&<>
+            <button className="bh" onClick={function(){setShowSched(true);}} style={{ background:"#0ea5e9", color:"#fff", border:"none", borderRadius:8, padding:"11px 0", fontFamily:"inherit", fontSize:12, cursor:"pointer", fontWeight:500 }}>📅 Propose a Time</button>
+            {showSched&&<div style={{ background:"#162032", border:"1px solid #334155", borderRadius:8, padding:14, display:"flex", flexDirection:"column", gap:10 }}>
+              <div className="g2s">
+                <div><Lbl>Date</Lbl><input type="date" value={propDate} min={new Date().toISOString().split("T")[0]} onChange={function(e){setPropDate(e.target.value);}} style={Object.assign({},baseInput,{colorScheme:"dark"})}/></div>
+                <div><Lbl>Time</Lbl><input type="time" value={propTime} onChange={function(e){setPropTime(e.target.value);}} style={Object.assign({},baseInput,{colorScheme:"dark"})}/></div>
+              </div>
+              <div><Lbl>Note to teacher (optional)</Lbl><input value={adminNote} onChange={function(e){setAdminNote(e.target.value);}} placeholder="e.g. Meet at the Print Lab entrance, Room B12" style={baseInput}/></div>
+              <div style={{ display:"flex", gap:8 }}>
+                <button className="bh" onClick={doSchedule} disabled={!propDate} style={{ flex:1, background:propDate?"#0ea5e9":"#334155", color:propDate?"#fff":"#64748b", border:"none", borderRadius:7, padding:"9px 0", fontFamily:"inherit", fontSize:12, cursor:propDate?"pointer":"not-allowed" }}>Confirm & Notify Teacher</button>
+                <button onClick={function(){setShowSched(false);}} style={{ background:"transparent", color:"#64748b", border:"1px solid #334155", borderRadius:7, padding:"9px 12px", fontFamily:"inherit", fontSize:12, cursor:"pointer" }}>Cancel</button>
+              </div>
+            </div>}
+            <button className="bh" onClick={function(){onCancel(selB.id);}} style={{ background:"rgba(239,68,68,0.07)", color:"#ef4444", border:"1px solid rgba(239,68,68,0.2)", borderRadius:8, padding:"9px 0", fontFamily:"inherit", fontSize:12, cursor:"pointer" }}>Cancel Request</button>
+          </>}
+          {selB.status==="Scheduled"&&<>
+            <button className="bh" onClick={function(){onComplete(selB.id);}} style={{ background:"#16a34a", color:"#fff", border:"none", borderRadius:8, padding:"11px 0", fontFamily:"inherit", fontSize:12, cursor:"pointer", fontWeight:500 }}>✅ Mark Session as Completed</button>
+            <button className="bh" onClick={function(){setShowSched(true);}} style={{ background:"#1e293b", color:"#38bdf8", border:"1px solid rgba(14,165,233,0.3)", borderRadius:8, padding:"9px 0", fontFamily:"inherit", fontSize:12, cursor:"pointer" }}>📅 Reschedule</button>
+            {showSched&&<div style={{ background:"#162032", border:"1px solid #334155", borderRadius:8, padding:14, display:"flex", flexDirection:"column", gap:10 }}>
+              <div className="g2s">
+                <div><Lbl>New Date</Lbl><input type="date" value={propDate} min={new Date().toISOString().split("T")[0]} onChange={function(e){setPropDate(e.target.value);}} style={Object.assign({},baseInput,{colorScheme:"dark"})}/></div>
+                <div><Lbl>New Time</Lbl><input type="time" value={propTime} onChange={function(e){setPropTime(e.target.value);}} style={Object.assign({},baseInput,{colorScheme:"dark"})}/></div>
+              </div>
+              <div><Lbl>Note to teacher</Lbl><input value={adminNote} onChange={function(e){setAdminNote(e.target.value);}} placeholder="e.g. Changed location to Room B12" style={baseInput}/></div>
+              <div style={{ display:"flex", gap:8 }}>
+                <button className="bh" onClick={doSchedule} disabled={!propDate} style={{ flex:1, background:propDate?"#0ea5e9":"#334155", color:propDate?"#fff":"#64748b", border:"none", borderRadius:7, padding:"9px 0", fontFamily:"inherit", fontSize:12, cursor:propDate?"pointer":"not-allowed" }}>Confirm Reschedule</button>
+                <button onClick={function(){setShowSched(false);}} style={{ background:"transparent", color:"#64748b", border:"1px solid #334155", borderRadius:7, padding:"9px 12px", fontFamily:"inherit", fontSize:12, cursor:"pointer" }}>Cancel</button>
+              </div>
+            </div>}
+          </>}
+          <button className="bh" onClick={function(){onDelete(selB.id);setSelB(null);}} style={{ background:"transparent", color:"#475569", border:"1px solid #334155", borderRadius:7, padding:"8px 0", fontFamily:"inherit", fontSize:11, cursor:"pointer" }}>Delete booking</button>
+        </div>
+      </div>}
+    </div>
+  </div>;
+}
+
 // ─── Main App ─────────────────────────────────────────────────────────────────
 export default function PrintPortal() {
   var sw=useWidth();
@@ -2583,9 +3004,14 @@ export default function PrintPortal() {
   var sreqs=useState([]); var requests=sreqs[0],setRequests=sreqs[1];
   var sload=useState(true); var loading=sload[0],setLoading=sload[1];
   var sinv=useState([]); var inv=sinv[0],setInv=sinv[1];
-  var slform=useState({teacherName:"",email:"",department:"",projectName:"",purpose:"",
-    jobType:"Engrave",laserMaterial:"wood",thickness:"",laserPower:"40W",
-    designWidth:"",designHeight:"",quantity:1,dueDate:"",notes:"",sourceUrl:""});
+  var slform=useState(function(){
+    var defaults={teacherName:"",email:"",department:"",projectName:"",purpose:"",
+      jobType:"Engrave",laserMaterial:"wood",thickness:"",laserPower:"40W",
+      designWidth:"",designHeight:"",quantity:1,dueDate:"",notes:"",sourceUrl:"",
+      kla:"",syllabusOutcome:"",priority:false};
+    try{var saved=JSON.parse(localStorage.getItem(UK)||"null");if(saved)return Object.assign({},defaults,{teacherName:saved.teacherName||"",email:saved.email||"",department:saved.department||""});}catch(e){}
+    return defaults;
+  });
   var lform=slform[0],setLform=slform[1];
   var slfile=useState(null); var laserFile=slfile[0],setLaserFile=slfile[1];
   var slstep=useState(0); var laserStep=slstep[0],setLaserStep=slstep[1];
@@ -2632,6 +3058,8 @@ export default function PrintPortal() {
   var sfailnote=useState(""); var failNote=sfailnote[0],setFailNote=sfailnote[1];
   var sshowfail=useState(false); var showFail=sshowfail[0],setShowFail=sshowfail[1];
   var slasinv=useState([]); var laserInv=slasinv[0],setLaserInv=slasinv[1];
+  var scadb=useState([]); var cadBookings=scadb[0],setCadBookings=scadb[1];
+  var sjobcad=useState(null); var cadJobMode=sjobcad[0],setCadJobMode=sjobcad[1]; // null | "booking"
   var slinvview=useState(false); var showLaserInv=slinvview[0],setShowLaserInv=slinvview[1];
   var ssbset=useState(false); var showSBSettings=ssbset[0],setShowSBSettings=ssbset[1];
   var ssburl=useState(function(){try{return localStorage.getItem("pl_sb_url")||"";}catch(e){return "";}}); var sbUrl=ssburl[0],setSbUrl=ssburl[1];
@@ -2667,6 +3095,7 @@ export default function PrintPortal() {
     loadReqs().then(function(r){setRequests(r);setLoading(false);});
     loadInv().then(setInv);
     loadLaserInv().then(setLaserInv);
+    loadCadBookings().then(setCadBookings);
   },[]);
 
   function syncSel(updated) { if(selReq){var f=updated.filter(function(r){return r.id===selReq.id;})[0];if(f)setSelReq(f);} }
@@ -3012,7 +3441,20 @@ async function scrapeModelUrl(url) {
     (function(){
       var jobId = req.id;
       var readyStr = readyDate.toLocaleDateString("en-AU",{weekday:"long",day:"numeric",month:"long"});
-      var klaStr=req.kla?KLA_OPTIONS.filter(function(k){return k.id===req.kla;})[0]:"";var klaLabel=klaStr?klaStr.label:"";var extraStr=req.extraFiles&&req.extraFiles.length>0?"\nAdditional files: "+req.extraFiles.map(function(ef){return ef.name;}).join(", "):"";var parts=["Hi "+req.teacherName+",","","Your 3D print request has been received! Here are your details:","","Job ID: "+jobId,"Project: "+req.projectName,(klaLabel?"KLA: "+klaLabel:""),"Material: "+req.material+" ("+req.color+")","Quantity: x"+req.quantity,"File: "+req.fileName+extraStr,"Estimated Ready: "+readyStr,"","Track your job status at: "+window.location.href,"","Thanks,","MACC Print Lab"].filter(Boolean);
+      var klaObj3d=req.kla?KLA_OPTIONS.filter(function(k){return k.id===req.kla;})[0]:null;
+      var extraStr=req.extraFiles&&req.extraFiles.length>0?"\nAdditional files: "+req.extraFiles.map(function(ef){return ef.name;}).join(", "):"";
+      var parts=["Hi "+req.teacherName+",","","Your 3D print request has been received! Here are your details:","",
+        "Job ID: "+jobId,
+        req.priority?"⚡ Priority: URGENT":"",
+        "Project: "+req.projectName,
+        klaObj3d?"KLA: "+klaObj3d.emoji+" "+klaObj3d.label:"",
+        req.syllabusOutcome?"Outcome: "+req.syllabusOutcome:"",
+        "Material: "+req.material+" ("+req.color+")",
+        "Quantity: x"+req.quantity,
+        "File: "+req.fileName+extraStr,
+        "Estimated Ready: "+readyStr,
+        "","Track your job status at: "+window.location.href,"","Thanks,","MACC Print Lab"
+      ].filter(Boolean);
       var body = parts.join("\n");
       setTimeout(function(){openMailto(req.email, "Print Request Received - "+req.projectName, body);},800);
     })();
@@ -3034,22 +3476,91 @@ async function scrapeModelUrl(url) {
     });
     var updated = [req].concat(requests);
     setRequests(updated); await saveReqs(updated);
+    try{localStorage.setItem(UK,JSON.stringify({teacherName:req.teacherName,email:req.email,department:req.department}));}catch(e){}
     setLaserConfetti(true); setLaserSubmitted(true);
     (function(){
-      var parts = ["Hi "+req.teacherName+",","","Your laser job request has been received!","","Job ID: "+req.id,"Project: "+req.projectName,"Job Type: "+(req.jobType||"Engrave"),"Material: "+(req.laserMaterial||""),"File: "+(req.fileName||""),"","Track your status at: "+window.location.href,"","Thanks,","MACC Print Lab"];
+      var klaL=req.kla?KLA_OPTIONS.filter(function(k){return k.id===req.kla;})[0]:null;
+      var parts = ["Hi "+req.teacherName+",","","Your laser/cutting request has been received! Here are your details:","",
+        "Job ID: "+req.id,"Project: "+req.projectName,
+        klaL?"KLA: "+klaL.emoji+" "+klaL.label:"",
+        req.syllabusOutcome?"Outcome: "+req.syllabusOutcome:"",
+        "Job Type: "+(req.jobType||"Engrave"),"Material: "+(req.laserMaterial||""),"File: "+(req.fileName||""),
+        req.dueDate?"Needed by: "+new Date(req.dueDate+"T00:00:00").toLocaleDateString("en-AU",{weekday:"long",day:"numeric",month:"long"}):"",
+        "","Track your status at: "+window.location.href,"","Thanks,","MACC Print Lab"].filter(Boolean);
       var body = parts.join("\n");
       setTimeout(function(){openMailto(req.email, "Laser Request Received - "+req.projectName, body);},800);
     })();
     setTimeout(function() { setLaserConfetti(false); }, 3000);
     setTimeout(function() {
       setLaserSubmitted(false); setLaserStep(0);
-      setLform({teacherName:"",email:"",department:"",projectName:"",purpose:"",
-        jobType:"Engrave",laserMaterial:"wood",thickness:"",laserPower:"40W",
-        designWidth:"",designHeight:"",quantity:1,dueDate:"",notes:"",sourceUrl:""});
+      setLform(function(prev){return {teacherName:prev.teacherName,email:prev.email,department:prev.department,
+        projectName:"",purpose:"",jobType:"Engrave",laserMaterial:"wood",thickness:"",laserPower:"40W",
+        designWidth:"",designHeight:"",quantity:1,dueDate:"",notes:"",sourceUrl:"",
+        kla:"",syllabusOutcome:"",priority:false};});
       setLaserFile(null);
       setLaserFileData(null);
       setSvgDims(null);
     }, 3500);
+  }
+
+  async function handleCadSubmit(booking) {
+    var updated = [booking].concat(cadBookings);
+    setCadBookings(updated); await saveCadBookings(updated);
+    try{localStorage.setItem(UK,JSON.stringify({teacherName:booking.teacherName,email:booking.email,department:booking.department}));}catch(e){}
+    // Gmail confirmation email
+    var klaObj=booking.kla?KLA_OPTIONS.filter(function(k){return k.id===booking.kla;})[0]:null;
+    var helpObj=CAD_HELP_TYPES.filter(function(h){return h.id===booking.helpType;})[0];
+    var durObj=CAD_DURATIONS.filter(function(d){return d.id===booking.duration;})[0];
+    var parts=[
+      "Hi "+booking.teacherName+",",""," Your CAD Services session request has been received!","",
+      "Booking ID: "+booking.id,
+      klaObj?"KLA: "+klaObj.emoji+" "+klaObj.label:"",
+      "Help needed: "+(helpObj?helpObj.label:booking.helpType),
+      "Session type: "+booking.sessionType,
+      "Duration: "+(durObj?durObj.label:booking.duration+"min"),
+      "Skill level: "+booking.skillLevel,
+      "Preferred days: "+(booking.preferredDays||[]).join(", "),
+      "Preferred times: "+(booking.preferredTimes||[]).join(", "),
+      "","The Print Lab team will review your request and propose a time within 2 school days.",
+      "You'll receive a calendar invite once confirmed.","",
+      "Check your booking status at: "+window.location.href,"","Thanks,","MACC Print Lab"
+    ].filter(Boolean);
+    openMailto(booking.email,"CAD Session Request Received - "+booking.projectGoal, parts.join("\n"));
+  }
+
+  async function scheduleCadBooking(id, dateTime, adminNote) {
+    var updated = cadBookings.map(function(b) {
+      if (b.id !== id) return b;
+      return Object.assign({},b,{status:"Scheduled",scheduledAt:dateTime,adminNote:adminNote||"",
+        log:(b.log||[]).concat([{msg:"Scheduled for "+dateTime+(adminNote?" — "+adminNote:""),by:admin?admin.name:"",at:new Date().toISOString()}])});
+    });
+    setCadBookings(updated); await saveCadBookings(updated);
+    var booking=cadBookings.filter(function(b){return b.id===id;})[0];
+    if(booking){
+      var d=new Date(dateTime);
+      var parts=["Hi "+booking.teacherName+",","","Great news — your CAD session has been confirmed!","",
+        "Date & Time: "+d.toLocaleDateString("en-AU",{weekday:"long",day:"numeric",month:"long"})+" at "+d.toLocaleTimeString("en-AU",{hour:"2-digit",minute:"2-digit"}),
+        "Session type: "+booking.sessionType,
+        adminNote?"Note: "+adminNote:"",
+        "","Please reply to this email if you need to reschedule.","","See you then!","MACC Print Lab"
+      ].filter(Boolean);
+      openMailto(booking.email,"CAD Session Confirmed — "+d.toLocaleDateString("en-AU",{weekday:"long",day:"numeric",month:"long"}),parts.join("\n"));
+    }
+  }
+
+  async function completeCadBooking(id) {
+    var updated = cadBookings.map(function(b){return b.id!==id?b:Object.assign({},b,{status:"Completed",completedAt:new Date().toISOString()});});
+    setCadBookings(updated); await saveCadBookings(updated);
+  }
+
+  async function cancelCadBooking(id) {
+    var updated = cadBookings.map(function(b){return b.id!==id?b:Object.assign({},b,{status:"Cancelled"});});
+    setCadBookings(updated); await saveCadBookings(updated);
+  }
+
+  async function deleteCadBooking(id) {
+    var updated = cadBookings.filter(function(b){return b.id!==id;});
+    setCadBookings(updated); await saveCadBookings(updated);
   }
 
   async function approveReq(id) {
@@ -3172,9 +3683,9 @@ async function scrapeModelUrl(url) {
     });
   })();
   var qs={pend:requests.filter(function(r){return r.status==="Pending";}).length,q:requests.filter(function(r){return r.status==="Queued";}).length,p:requests.filter(function(r){return r.status==="Printing";}).length,d:requests.filter(function(r){return r.status==="Done";}).length,f:requests.filter(function(r){return r.status==="Failed";}).length};
-  var isAdminView=view==="log"||view==="inventory"||view==="laser-inv"||view==="insights"||view==="report";
+  var isAdminView=view==="log"||view==="inventory"||view==="laser-inv"||view==="insights"||view==="report"||view==="cad";
 
-  var TABS=[["submit","New Request",false],["status","My Status",false],["stats","Stats",false],["log","Queue ("+requests.length+")"+(qs.pend>0?" · "+qs.pend+" pending":""),true],["inventory","3D Filament",true],["laser-inv","Laser Stock",true],["insights","Insights",true],["report","Report",true]];
+  var TABS=[["submit","New Request",false],["status","My Status",false],["stats","Stats",false],["log","Queue ("+requests.length+")"+(qs.pend>0?" · "+qs.pend+" pending":""),true],["inventory","3D Filament",true],["laser-inv","Laser Stock",true],["cad","CAD Sessions"+(cadBookings.filter(function(b){return b.status==="Pending";}).length>0?" · "+cadBookings.filter(function(b){return b.status==="Pending";}).length:""),true],["insights","Insights",true],["report","Report",true]];
 
   return <div style={{ minHeight:"100vh", background:"#0f172a", fontFamily:"'Inter','Segoe UI','system-ui',-apple-system,sans-serif", color:"#f1f5f9" }}>
     <style>{`
@@ -3281,7 +3792,7 @@ async function scrapeModelUrl(url) {
           {TABS.map(function(tab){
             var v=tab[0],l=tab[1],req=tab[2];
             var active=view===v,locked=req&&!admin;
-            return <button key={v} className="bh" onClick={function(){setView(v);setJobMode(null);setStep(0);setLaserStep(0);}} style={{ background:active?"#f97316":"transparent", color:active?"#fff":locked?"#475569":"#64748b", border:"1px solid "+(active?"#f97316":locked?"#1e293b":"#334155"), borderRadius:6, padding:"5px 10px", fontFamily:"inherit", fontSize:9, cursor:"pointer", letterSpacing:"0.06em", whiteSpace:"nowrap" }}>{l}{locked?" 🔒":""}</button>;
+            return <button key={v} className="bh" onClick={function(){setView(v);setJobMode(null);setStep(0);setLaserStep(0);setCadJobMode(null);}} style={{ background:active?"#f97316":"transparent", color:active?"#fff":locked?"#475569":"#64748b", border:"1px solid "+(active?"#f97316":locked?"#1e293b":"#334155"), borderRadius:6, padding:"5px 10px", fontFamily:"inherit", fontSize:9, cursor:"pointer", letterSpacing:"0.06em", whiteSpace:"nowrap" }}>{l}{locked?" 🔒":""}</button>;
           })}
           {admin&&<div style={{ display:"flex", alignItems:"center", gap:8, marginLeft:4 }}>
             {!sbConnected&&<div style={{ display:"flex", alignItems:"center", gap:5, background:"rgba(245,158,11,0.08)", border:"1px solid rgba(245,158,11,0.2)", borderRadius:5, padding:"3px 8px" }}>
@@ -3318,6 +3829,7 @@ async function scrapeModelUrl(url) {
       {isAdminView&&!admin&&<AdminLogin onLogin={handleLogin}/>}
       {view==="inventory"&&admin&&<FilamentInventory requests={requests} admin={admin}/>}
       {view==="laser-inv"&&admin&&<LaserInventoryPage laserInv={laserInv} setLaserInv={setLaserInv}/>}
+      {view==="cad"&&admin&&<CadAdminPage bookings={cadBookings} admin={admin} onSchedule={scheduleCadBooking} onComplete={completeCadBooking} onCancel={cancelCadBooking} onDelete={deleteCadBooking}/>}
       {view==="insights"&&admin&&<AdminInsights requests={requests}/>}
       {view==="report"&&admin&&<MonthlyReport requests={requests}/>}
 
@@ -3349,14 +3861,14 @@ async function scrapeModelUrl(url) {
               </div>
               <div style={{ background:"#7c3aed", color:"#fff", borderRadius:8, padding:"12px 0", fontFamily:"'DM Mono',monospace", fontSize:11, letterSpacing:"0.08em", textTransform:"uppercase" }}>Start Laser Request →</div>
             </div>
-            <div className="mode-card" onClick={function(){alert("CAD Services\n\nCAD (Computer-Aided Design) assistance is coming soon!\n\nThis service will offer:\n• Help preparing files for 3D printing\n• Tinkercad / Fusion 360 guidance\n• Model repair and optimisation\n• Design consultations\n\nContact the Print Lab team in the meantime.");}} style={{ background:"#1e293b", border:"2px solid #334155", borderRadius:16, padding:28, cursor:"pointer", textAlign:"center", opacity:0.8 }}>
+            <div className="mode-card" onClick={function(){setJobMode("cad");}} style={{ background:"#1e293b", border:"2px solid #0ea5e9", borderRadius:16, padding:28, cursor:"pointer", textAlign:"center", transition:"all .2s" }}>
               <div style={{ fontSize:52, marginBottom:14 }}>📐</div>
-              <div style={{ fontFamily:"inherit", fontWeight:600, fontSize:22, color:"#94a3b8", marginBottom:8 }}>CAD Services</div>
-              <div style={{ fontSize:12, color:"#475569", lineHeight:1.8, marginBottom:18 }}>Get help designing or preparing files for fabrication. Tinkercad, Fusion 360, and model repair assistance.</div>
+              <div style={{ fontWeight:600, fontSize:22, color:"#38bdf8", marginBottom:8 }}>CAD Services</div>
+              <div style={{ fontSize:12, color:"#64748b", lineHeight:1.8, marginBottom:18 }}>Book time with a specialist. Get hands-on help designing, fixing, or preparing files for fabrication.</div>
               <div style={{ display:"flex", flexDirection:"column", gap:7, textAlign:"left", marginBottom:20 }}>
-                {["File preparation for 3D printing","Design consultation","Model repair and optimisation","Tinkercad and Fusion 360 support"].map(function(f){return <div key={f} style={{ fontSize:11, color:"#334155", display:"flex", gap:8, lineHeight:1.6 }}><span style={{ color:"#475569", flexShrink:0 }}>·</span>{f}</div>;})}
+                {["File prep for 3D printing or laser cutting","Tinkercad and Fusion 360 guidance","Model repair and STL optimisation","Design from scratch — bring your idea"].map(function(f){return <div key={f} style={{ fontSize:11, color:"#94a3b8", display:"flex", gap:8, lineHeight:1.6 }}><span style={{ color:"#0ea5e9", flexShrink:0 }}>·</span>{f}</div>;})}
               </div>
-              <div style={{ background:"#334155", color:"#64748b", borderRadius:8, padding:"12px 0", fontFamily:"inherit", fontSize:12, fontWeight:500 }}>Coming Soon</div>
+              <div style={{ background:"rgba(14,165,233,0.12)", color:"#38bdf8", borderRadius:8, padding:"12px 0", fontFamily:"inherit", fontSize:13, fontWeight:500, border:"1px solid rgba(14,165,233,0.3)" }}>Book a Session →</div>
             </div>
           </div>
           <div style={{ maxWidth:1100, margin:"20px auto 0", background:"rgba(59,130,246,0.06)", border:"1px solid rgba(59,130,246,0.15)", borderRadius:10, padding:"12px 16px", display:"flex", alignItems:"center", gap:12 }}>
@@ -3366,6 +3878,8 @@ async function scrapeModelUrl(url) {
         </div>}
 
         {/* ── Laser wizard (inline when laser mode chosen) ── */}
+        {jobMode==="cad"&&<CadBookingWizard onSubmit={handleCadSubmit} onBack={function(){setJobMode(null);}} requests={requests}/>}
+
         {jobMode==="laser"&&!laserSubmitted&&<div>
           <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:20 }}>
             <button className="bh" onClick={function(){setJobMode(null);setLaserStep(0);}} style={{ background:"transparent", color:"#64748b", border:"1px solid #111827", borderRadius:7, padding:"6px 14px", fontFamily:"'DM Mono',monospace", fontSize:10, cursor:"pointer" }}>← Back</button>

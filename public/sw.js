@@ -1,7 +1,7 @@
 // MACC PrintLab — Service Worker
 // Caches the app shell so it works offline or when Google Fonts fails
 
-var CACHE = "printlab-v1";
+var CACHE = "printlab-v2";
 var SHELL = [
   "/macc-printlab/",
   "/macc-printlab/index.html",
