@@ -40,10 +40,17 @@ async function sset(k, v) {
 }
 
 
-// ─── Safe mailto opener — uses <a> click, never window.open() ────────────────
+// ─── Gmail browser compose opener ────────────────────────────────────────────
+// Opens Gmail compose in a new tab — works without a local mail client
 function openMailto(to, subject, body) {
+  var url = "https://mail.google.com/mail/?view=cm&fs=1"
+    + (to ? "&to=" + encodeURIComponent(to) : "")
+    + "&su=" + encodeURIComponent(subject)
+    + "&body=" + encodeURIComponent(body);
   var a = document.createElement("a");
-  a.href = "mailto:" + (to||"") + "?subject=" + encodeURIComponent(subject) + "&body=" + encodeURIComponent(body);
+  a.href = url;
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
   a.style.display = "none";
   document.body.appendChild(a);
   a.click();
@@ -1983,9 +1990,19 @@ function LaserWizard({ form, setForm, step, setStep, submitted, confetti, laserF
           <div>
             <Lbl>Quantity</Lbl>
             <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-              <button className="bh" onClick={function(){setForm(function(f){return Object.assign({},f,{quantity:Math.max(1,f.quantity-1)});});}} style={{ width:36, height:36, border:"1px solid #111827", borderRadius:6, background:"#162032", color:"#e2e8f0", fontSize:18, cursor:"pointer", fontFamily:"inherit" }}>-</button>
+              <button className="bh" onClick={function(){setForm(function(f){
+                        var nq=Math.max(1,f.quantity-1);
+                        var due=f.dueDate;
+                        if(stlStats){try{var rd=estimateReadyDate(requests,{stlStats:stlStats,quantity:nq});var buf=new Date(rd);var a=0;while(a<2){buf.setDate(buf.getDate()+1);if(buf.getDay()!==0&&buf.getDay()!==6)a++;}due=buf.toISOString().split("T")[0];}catch(e){}}
+                        return Object.assign({},f,{quantity:nq,dueDate:due});
+                      });}} style={{ width:36, height:36, border:"1px solid #111827", borderRadius:6, background:"#162032", color:"#e2e8f0", fontSize:18, cursor:"pointer", fontFamily:"inherit" }}>-</button>
               <div style={{ flex:1, textAlign:"center", fontFamily:"'Syne',sans-serif", fontSize:22, fontWeight:900, color:"#a855f7" }}>{form.quantity}</div>
-              <button className="bh" onClick={function(){setForm(function(f){return Object.assign({},f,{quantity:Math.min(50,f.quantity+1)});});}} style={{ width:36, height:36, border:"1px solid #111827", borderRadius:6, background:"#162032", color:"#e2e8f0", fontSize:18, cursor:"pointer", fontFamily:"inherit" }}>+</button>
+              <button className="bh" onClick={function(){setForm(function(f){
+                        var nq=Math.min(50,f.quantity+1);
+                        var due=f.dueDate;
+                        if(stlStats){try{var rd=estimateReadyDate(requests,{stlStats:stlStats,quantity:nq});var buf=new Date(rd);var a=0;while(a<2){buf.setDate(buf.getDate()+1);if(buf.getDay()!==0&&buf.getDay()!==6)a++;}due=buf.toISOString().split("T")[0];}catch(e){}}
+                        return Object.assign({},f,{quantity:nq,dueDate:due});
+                      });}} style={{ width:36, height:36, border:"1px solid #111827", borderRadius:6, background:"#162032", color:"#e2e8f0", fontSize:18, cursor:"pointer", fontFamily:"inherit" }}>+</button>
             </div>
           </div>
           <div><Lbl>Design Width (mm, optional)</Lbl><input type="number" min="1" value={form.designWidth} placeholder="e.g. 150" onChange={function(e){setForm(function(f){return Object.assign({},f,{designWidth:e.target.value});});}} style={baseInput}/></div>
@@ -2000,7 +2017,14 @@ function LaserWizard({ form, setForm, step, setStep, submitted, confetti, laserF
         </div>}
       </Card>
 
-      <div><Lbl>Needed by</Lbl><input type="date" value={form.dueDate} min={new Date().toISOString().split("T")[0]} onChange={function(e){setForm(function(f){return Object.assign({},f,{dueDate:e.target.value});});}} style={Object.assign({},baseInput,{colorScheme:"dark"})}/></div>
+      <div>
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+          <Lbl>Needed by</Lbl>
+          {form.dueDate&&stlStats&&<span style={{ fontSize:10, color:"#22c55e" }}>✓ Auto-estimated — adjust if needed</span>}
+        </div>
+        <input type="date" value={form.dueDate} min={new Date().toISOString().split("T")[0]} onChange={function(e){setForm(function(f){return Object.assign({},f,{dueDate:e.target.value});});}} style={Object.assign({},baseInput,{colorScheme:"dark"})}/>
+        {!form.dueDate&&!stlStats&&<div style={{ fontSize:10, color:"#64748b", marginTop:4 }}>Upload a file first for an automatic estimate</div>}
+      </div>
 
       <Card title="Safety acknowledgement">
         <div style={{ background:"rgba(239,68,68,0.06)", border:"1px solid rgba(239,68,68,0.2)", borderRadius:8, padding:"12px 14px" }}>
@@ -2027,7 +2051,7 @@ function LaserWizard({ form, setForm, step, setStep, submitted, confetti, laserF
     {step===2&&<div className="fu" style={{ display:"flex", flexDirection:"column", gap:14 }}>
       <Card title="Summary — does everything look right?">
         <div className="g2s" style={{ gap:10 }}>
-          {[["Name",form.teacherName],["Email",form.email],["Department",form.department||"Not specified"],
+          {[["Name",form.teacherName],["Email",form.email],["KLA",(function(){var k=KLA_OPTIONS.filter(function(x){return x.id===form.kla;})[0];return k?k.emoji+" "+k.label:"Not specified";})()],
             ["Project",form.projectName],["Job Type",form.jobType],["Material",selMat?selMat.name:"—"],
             ["Thickness",form.thickness?form.thickness+"mm":"N/A (engrave only)"],
             ["Laser",selJob&&selJob.needsLaser?"40W H2D":"N/A — "+form.jobType],
@@ -2657,179 +2681,214 @@ export default function PrintPortal() {
   }
 
 // ─── URL Scraper ─────────────────────────────────────────────────────────────
-// Uses allorigins CORS proxy to fetch model pages and extract print data
+// Fetches model pages via CORS proxy and extracts print settings
 
-var CORS_PROXY = "https://api.allorigins.win/get?url=";
+var CORS_PROXIES = [
+  "https://api.allorigins.win/get?url=",
+  "https://corsproxy.io/?"
+];
 
 function normaliseMaterial(str) {
   if (!str) return null;
-  var s = str.toLowerCase();
+  var s = str.toLowerCase().trim();
   if (s.indexOf("petg") >= 0) return "PETG";
-  if (s.indexOf("abs") >= 0) return "ABS";
-  if (s.indexOf("tpu") >= 0 || s.indexOf("flex") >= 0) return "TPU";
-  if (s.indexOf("asa") >= 0) return "ABS";
+  if (s.indexOf("abs") >= 0 || s.indexOf("asa") >= 0) return "ABS";
+  if (s.indexOf("tpu") >= 0 || s.indexOf("tpe") >= 0 || s.indexOf("flex") >= 0) return "TPU";
   if (s.indexOf("pla") >= 0) return "PLA";
   return null;
 }
 
 function normaliseTime(str) {
   if (!str) return null;
-  var s = str.toLowerCase().replace(/,/g, "");
+  var s = (""+str).toLowerCase().replace(/,/g,"");
   var h = 0, m = 0;
   var hM = s.match(/([0-9]+)\s*h/); if (hM) h = parseInt(hM[1]);
   var mM = s.match(/([0-9]+)\s*m/); if (mM) m = parseInt(mM[1]);
-  if (h === 0 && m === 0) { var n = parseFloat(s); if (!isNaN(n)) h = n; }
-  return (h > 0 || m > 0) ? { h: h, m: m, label: (h > 0 ? h + "h " : "") + (m > 0 ? m + "m" : "") } : null;
+  // plain number = minutes
+  if (h === 0 && m === 0) { var n = parseInt(s); if (!isNaN(n) && n > 0) { h = Math.floor(n/60); m = n%60; } }
+  if (h === 0 && m === 0) return null;
+  return { h:h, m:m, label:(h>0?h+"h ":"")+(m>0?m+"m":"").trim() };
 }
 
-function parseHTMLMeta(html) {
-  var result = { name: null, description: null, thumbnail: null, tags: [] };
-  // Open Graph
-  var ogTitle = html.match(/<meta[^>]+property="og:title"[^>]+content="([^"]+)"/i);
-  if (!ogTitle) ogTitle = html.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:title"/i);
-  if (ogTitle) result.name = ogTitle[1].trim();
-
-  var ogDesc = html.match(/<meta[^>]+property="og:description"[^>]+content="([^"]+)"/i);
-  if (!ogDesc) ogDesc = html.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:description"/i);
-  if (ogDesc) result.description = ogDesc[1].trim().replace(/&amp;/g,"&").replace(/&quot;/g,'"').replace(/&#39;/g,"'");
-
-  var ogImg = html.match(/<meta[^>]+property="og:image"[^>]+content="([^"]+)"/i);
-  if (!ogImg) ogImg = html.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:image"/i);
-  if (ogImg) result.thumbnail = ogImg[1];
-
-  // Twitter card fallbacks
-  if (!result.name) { var tw = html.match(/<meta[^>]+name="twitter:title"[^>]+content="([^"]+)"/i); if (tw) result.name = tw[1].trim(); }
-  if (!result.description) { var tw = html.match(/<meta[^>]+name="twitter:description"[^>]+content="([^"]+)"/i); if (tw) result.description = tw[1].trim(); }
-  return result;
-}
-
-function parseJSONLD(html) {
-  var result = {};
-  var matches = html.match(/<script[^>]+type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi);
-  if (!matches) return result;
-  for (var i = 0; i < matches.length; i++) {
+async function proxyFetch(url) {
+  for (var i = 0; i < CORS_PROXIES.length; i++) {
     try {
-      var json = JSON.parse(matches[i].replace(/<script[^>]*>/i,"").replace(/<\/script>/i,"").trim());
-      if (json.name) result.name = result.name || json.name;
-      if (json.description) result.description = result.description || json.description.substring(0,500);
-      if (json.image) result.thumbnail = result.thumbnail || (typeof json.image === "string" ? json.image : (json.image[0] || null));
-      if (json.keywords) result.tags = json.keywords.split(",").map(function(t){return t.trim();}).slice(0,8);
+      var resp = await fetch(CORS_PROXIES[i] + encodeURIComponent(url), { signal: AbortSignal.timeout(10000) });
+      if (!resp.ok) continue;
+      var data = await resp.json();
+      var html = data.contents || data.body || "";
+      if (html && html.length > 500) return html;
     } catch(e) {}
   }
-  return result;
+  return null;
 }
 
-function parsePrintablesHTML(html) {
-  var result = { material: null, layerHeight: null, infill: null, supports: null, printTime: null, printerProfile: null };
-  // Printables embeds __NUXT_DATA__ or similar JSON blobs
-  var nuxt = html.match(/__NUXT_DATA__[^=]*=([\s\S]*?);<\/script>/i);
-  if (!nuxt) nuxt = html.match(/window\.__nuxt__[^=]*=([\s\S]*?);<\/script>/i);
-  if (nuxt) {
+function getMetaTags(html) {
+  var out = { name:null, description:null, thumbnail:null, tags:[] };
+  function getMeta(patterns) {
+    for (var i=0;i<patterns.length;i++){var m=html.match(patterns[i]);if(m)return m[1].replace(/&amp;/g,"&").replace(/&quot;/g,'"').replace(/&#039;/g,"'").replace(/&lt;/g,"<").replace(/&gt;/g,">").trim();}
+    return null;
+  }
+  out.name = getMeta([
+    /property="og:title"\s+content="([^"]{2,120})"/i,
+    /content="([^"]{2,120})"\s+property="og:title"/i,
+    /name="twitter:title"\s+content="([^"]{2,120})"/i,
+  ]);
+  out.description = getMeta([
+    /property="og:description"\s+content="([^"]{5,500})"/i,
+    /content="([^"]{5,500})"\s+property="og:description"/i,
+    /name="description"\s+content="([^"]{5,500})"/i,
+  ]);
+  out.thumbnail = getMeta([
+    /property="og:image"\s+content="([^"]+)"/i,
+    /content="([^"]+)"\s+property="og:image"/i,
+  ]);
+  return out;
+}
+
+function getJSONLD(html) {
+  var out = { name:null, description:null, thumbnail:null, tags:[] };
+  var blocks = html.match(/<script[^>]+type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi) || [];
+  for (var i=0;i<blocks.length;i++) {
     try {
-      var data = JSON.parse(nuxt[1]);
-      var str = JSON.stringify(data);
-      var mM = str.match(/"material":"([^"]+)"/i); if (mM) result.material = normaliseMaterial(mM[1]);
-      var lM = str.match(/"layer_height":([0-9.]+)/i); if (lM) result.layerHeight = parseFloat(lM[1]);
-      var iM = str.match(/"infill":([0-9]+)/i); if (iM) result.infill = parseInt(iM[1]);
-      var sM = str.match(/"supports":(true|false)/i); if (sM) result.supports = sM[1] === "true";
-      var tM = str.match(/"print_time":"([^"]+)"/i); if (tM) result.printTime = normaliseTime(tM[1]);
+      var clean = blocks[i].replace(/<script[^>]*>/i,"").replace(/<\/script>/i,"").trim();
+      var obj = JSON.parse(clean);
+      if (obj.name && !out.name) out.name = obj.name;
+      if (obj.description && !out.description) out.description = (""+obj.description).substring(0,500);
+      if (obj.image && !out.thumbnail) out.thumbnail = typeof obj.image === "string" ? obj.image : (obj.image[0] || null);
+      if (obj.keywords && !out.tags.length) out.tags = (""+obj.keywords).split(",").map(function(t){return t.trim();}).filter(Boolean).slice(0,8);
     } catch(e) {}
   }
-  // Fallback: scan visible text patterns
-  var matM = html.match(/(?:Material|Filament)[^a-zA-Z]*:?\s*<[^>]*>([^<]{2,30})/i);
-  if (!result.material && matM) result.material = normaliseMaterial(matM[1]);
-  var lhM = html.match(/(?:Layer height|Layer Height)[^0-9]*([0-9.]+)\s*mm/i);
-  if (!result.layerHeight && lhM) result.layerHeight = parseFloat(lhM[1]);
-  var infM = html.match(/(?:Infill|Fill)[^0-9]*([0-9]+)\s*%/i);
-  if (!result.infill && infM) result.infill = parseInt(infM[1]);
-  var supM = html.match(/(?:Supports?|Support structures?)[^:]*:[^a-zA-Z]*([YesNo]{2,3})/i);
-  if (result.supports === null && supM) result.supports = supM[1].toLowerCase() === "yes";
-  var ptM = html.match(/(?:Print time|Printing time)[^0-9]*([0-9]+h\s*[0-9]*m?|[0-9]+\s*hours?[^<]{0,10})/i);
-  if (!result.printTime && ptM) result.printTime = normaliseTime(ptM[1]);
-  return result;
+  return out;
 }
 
-function parseMakerWorldHTML(html) {
-  var result = { material: null, layerHeight: null, infill: null, supports: null, printTime: null, printerProfile: null };
-  // MakerWorld embeds model data in a __NEXT_DATA__ script
-  var nd = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/i);
+// ── Platform-specific print setting extractors ────────────────────────────────
+
+function extractPrintables(html) {
+  var out = { material:null, layerHeight:null, infill:null, supports:null, printTime:null, printerProfile:null };
+
+  // Printables Nuxt 3 embeds data as <script type="application/json" id="__NUXT_DATA__">
+  // which is a flat array — find it and scan the raw string for known keys
+  var nuxtJson = html.match(/<script[^>]+id="__NUXT_DATA__"[^>]*>([\s\S]*?)<\/script>/i);
+  if (nuxtJson) {
+    var raw = nuxtJson[1];
+    // Layer height — appears as number after "layerHeight" or "layer_height"
+    var lhM = raw.match(/"layer(?:_h|H)eight","?([0-9]+\.?[0-9]*)"/);
+    if (!lhM) lhM = raw.match(/"layer_height":([0-9]+\.?[0-9]*)/);
+    if (lhM) out.layerHeight = parseFloat(lhM[1]);
+
+    // Infill — percentage value
+    var infM = raw.match(/"infill(?:_density)?","?([0-9]+)"/);
+    if (!infM) infM = raw.match(/"infill":([0-9]+)/);
+    if (infM) out.infill = parseInt(infM[1]);
+
+    // Material
+    var matM = raw.match(/"material(?:s?Name)?":"([A-Za-z+]{2,8})"/i);
+    if (!matM) matM = raw.match(/"filament(?:Type|_type)?":"([A-Za-z+]{2,8})"/i);
+    if (matM) out.material = normaliseMaterial(matM[1]);
+
+    // Supports
+    var supM = raw.match(/"supports(?:Needed|_needed)?":([truefalse]+)/i);
+    if (supM) out.supports = supM[1] === "true";
+
+    // Print duration — stored in seconds as integer, or as string like "2h 30m"
+    var ptM = raw.match(/"print(?:Duration|_duration|Time|_time)":([0-9]+)/);
+    if (ptM) { var secs = parseInt(ptM[1]); if (secs > 60) out.printTime = normaliseTime(Math.floor(secs/3600)+"h "+Math.floor((secs%3600)/60)+"m"); }
+    if (!out.printTime) { var ptS = raw.match(/"print(?:Duration|Time)":"([0-9h\s:m]+)"/i); if (ptS) out.printTime = normaliseTime(ptS[1]); }
+
+    // Printer profile
+    var prM = raw.match(/"(?:printerModel|printer_type|printerType)":"([^"]{3,50})"/);
+    if (prM) out.printerProfile = prM[1];
+  }
+
+  // Fallback: scan rendered HTML for visible labels (Printables renders these server-side)
+  if (!out.material) {
+    var matV = html.match(/(?:Material|Filament)[\s\S]{0,80}?<[^>]+>([A-Z]{2,5}(?:[+ ][A-Z]{2,5})?)<\/[a-z]+>/);
+    if (matV) out.material = normaliseMaterial(matV[1]);
+  }
+  var lhText = html.match(/[Ll]ayer\s+[Hh]eight[^0-9]{0,20}([0-9]+\.?[0-9]*)\s*mm/);
+  if (!out.layerHeight && lhText) out.layerHeight = parseFloat(lhText[1]);
+  var infText = html.match(/[Ii]nfill[^0-9]{0,20}([0-9]+)\s*%/);
+  if (out.infill === null && infText) out.infill = parseInt(infText[1]);
+  var supText = html.match(/[Ss]upports?[^a-zA-Z]{0,15}(Yes|No|yes|no|Required|required|None|none)/);
+  if (out.supports === null && supText) out.supports = ["yes","required"].indexOf(supText[1].toLowerCase()) >= 0;
+  var ptText = html.match(/[Pp]rint\s+[Tt]ime[^0-9]{0,20}([0-9]+h[^<]{0,10}|[0-9]+\s*min[^<]{0,10})/);
+  if (!out.printTime && ptText) out.printTime = normaliseTime(ptText[1]);
+
+  return out;
+}
+
+function extractMakerWorld(html) {
+  var out = { material:null, layerHeight:null, infill:null, supports:null, printTime:null, printerProfile:null };
+  var nd = html.match(/<script[^>]+id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/i);
   if (nd) {
     try {
-      var data = JSON.parse(nd[1]);
-      var str = JSON.stringify(data);
-      var mM = str.match(/"filament_type":"([^"]+)"/i); if (mM) result.material = normaliseMaterial(mM[1]);
-      var lM = str.match(/"layer_height":([0-9.]+)/i); if (lM) result.layerHeight = parseFloat(lM[1]);
-      var iM = str.match(/"sparse_infill_density":([0-9]+)/i); if (iM) result.infill = parseInt(iM[1]);
-      var sM = str.match(/"support_type":"([^"]+)"/i); if (sM) result.supports = sM[1] !== "none" && sM[1] !== "";
-      var tM = str.match(/"print_time":([0-9]+)/i); if (tM) { var mins=parseInt(tM[1]); result.printTime = normaliseTime(Math.floor(mins/60)+"h "+( mins%60)+"m"); }
-      var pM = str.match(/"machine_name":"([^"]+)"/i); if (pM) result.printerProfile = pM[1];
+      var raw = nd[1];
+      var mM = raw.match(/"filament_type":"([^"]+)"/i); if (mM) out.material = normaliseMaterial(mM[1]);
+      var lM = raw.match(/"layer_height":([0-9.]+)/i); if (lM) out.layerHeight = parseFloat(lM[1]);
+      var iM = raw.match(/"sparse_infill_density":([0-9]+)/i); if (iM) out.infill = parseInt(iM[1]);
+      var sM = raw.match(/"support_type":"([^"]+)"/i); if (sM) out.supports = sM[1]!=="none"&&sM[1]!=="";
+      var tM = raw.match(/"print_time":([0-9]+)/i); if (tM) { var s=parseInt(tM[1]); out.printTime=normaliseTime(Math.floor(s/3600)+"h "+Math.floor((s%3600)/60)+"m"); }
+      var pM = raw.match(/"machine_name":"([^"]+)"/i); if (pM) out.printerProfile = pM[1];
     } catch(e) {}
   }
-  // Fallback text patterns
-  var matM = html.match(/Filament[^:]*:[^<]*<[^>]*>([^<]{2,20})/i);
-  if (!result.material && matM) result.material = normaliseMaterial(matM[1]);
-  return result;
+  // Fallback text
+  var lhF = html.match(/[Ll]ayer[^0-9]{0,20}([0-9]+\.?[0-9]*)\s*mm/); if (!out.layerHeight&&lhF) out.layerHeight=parseFloat(lhF[1]);
+  var infF = html.match(/[Ii]nfill[^0-9]{0,20}([0-9]+)\s*%/); if (out.infill===null&&infF) out.infill=parseInt(infF[1]);
+  return out;
 }
 
-function parseThingiHTML(html) {
-  var result = { material: null, layerHeight: null, infill: null, supports: null, printTime: null };
-  var matM = html.match(/(?:Material|Filament)[^a-zA-Z0-9]{1,30}([A-Z]{2,6})(?:\b|\s)/);
-  if (matM) result.material = normaliseMaterial(matM[1]);
-  var lhM = html.match(/(?:Layer Height|layer height|layer_height)[^0-9]*([0-9.]+)\s*mm/i);
-  if (lhM) result.layerHeight = parseFloat(lhM[1]);
-  var infM = html.match(/(?:Infill|infill)[^0-9]*([0-9]+)\s*%/i);
-  if (infM) result.infill = parseInt(infM[1]);
-  var supM = html.match(/(?:Support|support)[^a-zA-Z]*:?\s*(yes|no|required|none)/i);
-  if (supM) result.supports = ["yes","required"].indexOf(supM[1].toLowerCase()) >= 0;
-  var ptM = html.match(/(?:Print Time|print time)[^0-9]*([0-9]+\s*h[^<]{0,15})/i);
-  if (ptM) result.printTime = normaliseTime(ptM[1]);
-  return result;
+function extractThingiverse(html) {
+  var out = { material:null, layerHeight:null, infill:null, supports:null, printTime:null };
+  var matM = html.match(/[Mm]aterial[^a-zA-Z0-9]{1,30}([A-Z]{2,5})/); if (matM) out.material=normaliseMaterial(matM[1]);
+  var lhM = html.match(/[Ll]ayer\s*[Hh]eight[^0-9]{0,20}([0-9]+\.?[0-9]*)\s*mm/i); if (lhM) out.layerHeight=parseFloat(lhM[1]);
+  var infM = html.match(/[Ii]nfill[^0-9]{0,20}([0-9]+)\s*%/i); if (infM) out.infill=parseInt(infM[1]);
+  var supM = html.match(/[Ss]upports?[^a-z]{0,15}(Yes|No|yes|no)/i); if (supM) out.supports=supM[1].toLowerCase()==="yes";
+  var ptM = html.match(/[Pp]rint\s*[Tt]ime[^0-9]{0,20}([0-9]+\s*h[^<]{0,15})/i); if (ptM) out.printTime=normaliseTime(ptM[1]);
+  return out;
 }
 
 async function scrapeModelUrl(url) {
   if (!url || url.length < 10) return null;
   var platform = null;
-  if (url.indexOf("thingiverse.com") >= 0) platform = "Thingiverse";
-  else if (url.indexOf("printables.com") >= 0) platform = "Printables";
+  if (url.indexOf("printables.com") >= 0) platform = "Printables";
   else if (url.indexOf("makerworld.com") >= 0) platform = "MakerWorld";
+  else if (url.indexOf("thingiverse.com") >= 0) platform = "Thingiverse";
   else if (url.indexOf("myminifactory.com") >= 0) platform = "MyMiniFactory";
   else if (url.indexOf("cults3d.com") >= 0) platform = "Cults3D";
   else if (url.indexOf("tinkercad.com") >= 0) platform = "Tinkercad";
   else if (url.indexOf("thangs.com") >= 0) platform = "Thangs";
   if (!platform) return null;
 
-  try {
-    var resp = await fetch(CORS_PROXY + encodeURIComponent(url), { signal: AbortSignal.timeout(8000) });
-    if (!resp.ok) return null;
-    var data = await resp.json();
-    var html = data.contents || "";
-    if (!html) return null;
+  var html = await proxyFetch(url);
+  if (!html) return null;
 
-    var meta = parseHTMLMeta(html);
-    var jsonld = parseJSONLD(html);
-    var settings = {};
-    if (platform === "Printables") settings = parsePrintablesHTML(html);
-    else if (platform === "MakerWorld") settings = parseMakerWorldHTML(html);
-    else if (platform === "Thingiverse") settings = parseThingiHTML(html);
-    else {
-      // Generic fallback for all other platforms
-      settings = parsePrintablesHTML(html);
-    }
+  var meta = getMetaTags(html);
+  var jsonld = getJSONLD(html);
 
-    return {
-      platform: platform,
-      name: jsonld.name || meta.name || null,
-      description: jsonld.description || meta.description || null,
-      thumbnail: jsonld.thumbnail || meta.thumbnail || null,
-      tags: jsonld.tags || [],
-      material: settings.material,
-      layerHeight: settings.layerHeight,
-      infill: settings.infill,
-      supports: settings.supports,
-      printTime: settings.printTime,
-      printerProfile: settings.printerProfile || null
-    };
-  } catch(e) { return null; }
+  var settings = {};
+  if (platform === "Printables") settings = extractPrintables(html);
+  else if (platform === "MakerWorld") settings = extractMakerWorld(html);
+  else if (platform === "Thingiverse") settings = extractThingiverse(html);
+  else settings = extractPrintables(html); // generic fallback
+
+  // Clean name — strip site name suffix ("Model Name | Printables" → "Model Name")
+  var name = jsonld.name || meta.name || null;
+  if (name) name = name.replace(/\s*[|\-–]\s*(Printables|Thingiverse|MyMiniFactory|MakerWorld|Cults3D|Thangs|Tinkercad)[^]*$/i,"").trim();
+
+  return {
+    platform: platform,
+    name: name,
+    description: jsonld.description || meta.description || null,
+    thumbnail: jsonld.thumbnail || meta.thumbnail || null,
+    tags: jsonld.tags || [],
+    material: settings.material || null,
+    layerHeight: settings.layerHeight || null,
+    infill: settings.infill != null ? settings.infill : null,
+    supports: settings.supports != null ? settings.supports : null,
+    printTime: settings.printTime || null,
+    printerProfile: settings.printerProfile || null
+  };
 }
 
   function detectPlatform(url){if(!url)return null;if(url.indexOf("thingiverse.com")>=0)return"Thingiverse";if(url.indexOf("printables.com")>=0)return"Printables";if(url.indexOf("myminifactory.com")>=0)return"MyMiniFactory";if(url.indexOf("cults3d.com")>=0)return"Cults3D";if(url.indexOf("thangs.com")>=0)return"Thangs";if(url.indexOf("tinkercad.com")>=0)return"Tinkercad";if(url.indexOf("makerworld.com")>=0)return"MakerWorld";return null;}
@@ -2910,6 +2969,18 @@ async function scrapeModelUrl(url) {
         return;
       }
       var stats=parseSTL(buf);if(!stats)throw new Error("Cannot parse this STL.");setStlStats(stats);
+      // Auto-suggest due date: estimated ready + 2 business day buffer
+      (function(){
+        try{
+          var readyDate=estimateReadyDate(requests,{stlStats:stats,quantity:form.quantity});
+          var due=new Date(readyDate);
+          // Add 2 business days buffer for setup / pickup time
+          var added=0;
+          while(added<2){due.setDate(due.getDate()+1);if(due.getDay()!==0&&due.getDay()!==6)added++;}
+          var duStr=due.toISOString().split("T")[0];
+          setForm(function(f){return Object.assign({},f,{dueDate:f.dueDate?f.dueDate:duStr});});
+        }catch(e){}
+      })();
     }catch(e){setStlError("Could not read file: "+e.message);setStlStats(null);}
     finally{setParsing(false);}
   },[]);
@@ -3344,11 +3415,28 @@ async function scrapeModelUrl(url) {
                 <input type="checkbox" checked={form.priority} onChange={function(){}} style={{ width:16, height:16, accentColor:"#ef4444", cursor:"pointer" }}/>
                 <div><div style={{ fontSize:12, fontWeight:500, color:form.priority?"#fca5a5":"#94a3b8" }}>Mark as Urgent</div><div style={{ fontSize:10, color:"#64748b" }}>Flags this job for priority attention in the admin queue</div></div>
               </div>
-              <div><Lbl>Department</Lbl>
-                <select value={form.department} onChange={function(e){setForm(function(f){return Object.assign({},f,{department:e.target.value});});}} style={selectStyle}>
-                  <option value="">— Select your department —</option>
-                  {DEPARTMENTS.map(function(d){return <option key={d} value={d}>{d}</option>;})}
-                </select>
+              <div>
+                <Lbl>Key Learning Area</Lbl>
+                <div style={{ display:"flex", flexWrap:"wrap", gap:7, marginTop:2 }}>
+                  {KLA_OPTIONS.map(function(k){
+                    var active=form.kla===k.id;
+                    return <button key={k.id} type="button" onClick={function(){
+                      setForm(function(f){
+                        var nextKla=active?"":k.id;
+                        // Map KLA to closest department for admin reporting
+                        var klaToDepmap={"eng":"English","maths":"Mathematics","sci":"Science","hsie":"HSIE","tas":"TAS","pdhpe":"PDHPE","capa":"CAPA","lang":"Modern Languages","other":"Other"};
+                        return Object.assign({},f,{kla:nextKla,department:nextKla?klaToDepmap[nextKla]||f.department:f.department});
+                      });
+                    }} className="bh" style={{ display:"flex", alignItems:"center", gap:6, background:active?"rgba("+hexToRgb(k.color)+",0.15)":"#162032", border:"1px solid "+(active?k.color:"#334155"), borderRadius:8, padding:"7px 12px", fontFamily:"inherit", fontSize:12, cursor:"pointer", color:active?k.color:"#64748b", transition:"all .15s" }}>
+                      <span style={{ fontSize:14 }}>{k.emoji}</span>{k.label}
+                    </button>;
+                  })}
+                </div>
+                {form.kla&&<div style={{ marginTop:10 }}>
+                  <Lbl>Syllabus outcome or cross-curriculum link (optional)</Lbl>
+                  <input value={form.syllabusOutcome} onChange={function(e){setForm(function(f){return Object.assign({},f,{syllabusOutcome:e.target.value});});}} placeholder="e.g. SC4-4WS — Working scientifically" style={Object.assign({},baseInput,{fontSize:12})}/>
+                  <div style={{ fontSize:10, color:"#475569", marginTop:4 }}>Helps justify the print for curriculum reporting</div>
+                </div>}
               </div>
             </Card>
 
@@ -3488,26 +3576,24 @@ async function scrapeModelUrl(url) {
             <Card title="What are you printing?">
               <div><Lbl>Project name</Lbl><input value={form.projectName} placeholder='e.g. "Volcano model for Year 9"' onChange={function(e){setForm(function(f){return Object.assign({},f,{projectName:e.target.value});});}} style={baseInput}/></div>
               <div><Lbl>What's it for? (optional)</Lbl><textarea value={form.purpose} rows={2} placeholder="e.g. End-of-term science fair" onChange={function(e){setForm(function(f){return Object.assign({},f,{purpose:e.target.value});});}} style={Object.assign({},baseInput,{resize:"vertical",lineHeight:1.7})}/></div>
-              <div>
-                <Lbl>Key Learning Area (optional)</Lbl>
-                <div style={{ display:"flex", flexWrap:"wrap", gap:8, marginTop:2 }}>
-                  {KLA_OPTIONS.map(function(k){var active=form.kla===k.id;return <button key={k.id} type="button" onClick={function(){setForm(function(f){return Object.assign({},f,{kla:active?"":k.id});});}} className="bh" style={{ display:"flex", alignItems:"center", gap:6, background:active?"rgba("+hexToRgb(k.color)+",0.15)":"#162032", border:"1px solid "+(active?k.color:"#334155"), borderRadius:8, padding:"7px 12px", fontFamily:"inherit", fontSize:12, cursor:"pointer", color:active?k.color:"#64748b", transition:"all .15s" }}>
-                    <span style={{ fontSize:14 }}>{k.emoji}</span> {k.label}
-                  </button>;})}
-                </div>
-                {form.kla&&<div style={{ marginTop:10 }}>
-                  <Lbl>Syllabus outcome or cross-curriculum link (optional)</Lbl>
-                  <input value={form.syllabusOutcome} onChange={function(e){setForm(function(f){return Object.assign({},f,{syllabusOutcome:e.target.value});});}} placeholder="e.g. SC4-4WS — Working scientifically" style={Object.assign({},baseInput,{fontSize:12})}/>
-                  <div style={{ fontSize:10, color:"#475569", marginTop:4 }}>Helps justify the print for curriculum reporting</div>
-                </div>}
-              </div>
+
               <div className="g2s">
                 <div>
                   <Lbl>How many copies?</Lbl>
                   <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-                    <button className="bh" onClick={function(){setForm(function(f){return Object.assign({},f,{quantity:Math.max(1,f.quantity-1)});});}} style={{ width:36, height:36, border:"1px solid #111827", borderRadius:6, background:"#162032", color:"#e2e8f0", fontSize:18, cursor:"pointer", fontFamily:"inherit" }}>-</button>
+                    <button className="bh" onClick={function(){setForm(function(f){
+                        var nq=Math.max(1,f.quantity-1);
+                        var due=f.dueDate;
+                        if(stlStats){try{var rd=estimateReadyDate(requests,{stlStats:stlStats,quantity:nq});var buf=new Date(rd);var a=0;while(a<2){buf.setDate(buf.getDate()+1);if(buf.getDay()!==0&&buf.getDay()!==6)a++;}due=buf.toISOString().split("T")[0];}catch(e){}}
+                        return Object.assign({},f,{quantity:nq,dueDate:due});
+                      });}} style={{ width:36, height:36, border:"1px solid #111827", borderRadius:6, background:"#162032", color:"#e2e8f0", fontSize:18, cursor:"pointer", fontFamily:"inherit" }}>-</button>
                     <div style={{ flex:1, textAlign:"center", fontFamily:"'Syne',sans-serif", fontSize:22, fontWeight:900, color:"#f97316" }}>{form.quantity}</div>
-                    <button className="bh" onClick={function(){setForm(function(f){return Object.assign({},f,{quantity:Math.min(50,f.quantity+1)});});}} style={{ width:36, height:36, border:"1px solid #111827", borderRadius:6, background:"#162032", color:"#e2e8f0", fontSize:18, cursor:"pointer", fontFamily:"inherit" }}>+</button>
+                    <button className="bh" onClick={function(){setForm(function(f){
+                        var nq=Math.min(50,f.quantity+1);
+                        var due=f.dueDate;
+                        if(stlStats){try{var rd=estimateReadyDate(requests,{stlStats:stlStats,quantity:nq});var buf=new Date(rd);var a=0;while(a<2){buf.setDate(buf.getDate()+1);if(buf.getDay()!==0&&buf.getDay()!==6)a++;}due=buf.toISOString().split("T")[0];}catch(e){}}
+                        return Object.assign({},f,{quantity:nq,dueDate:due});
+                      });}} style={{ width:36, height:36, border:"1px solid #111827", borderRadius:6, background:"#162032", color:"#e2e8f0", fontSize:18, cursor:"pointer", fontFamily:"inherit" }}>+</button>
                   </div>
                   {stlStats&&form.quantity>1&&<div style={{ fontSize:10, color:"#f97316", marginTop:6 }}>Total est: {fmtH(stlStats.estimatedHours*form.quantity*0.85)}</div>}
                 </div>
@@ -3536,7 +3622,7 @@ async function scrapeModelUrl(url) {
           {step===2&&<div className="fu" style={{ display:"flex", flexDirection:"column", gap:14 }}>
             <Card title="Summary — does everything look right?">
               <div className="g2s" style={{ gap:10 }}>
-                {[["Name",form.teacherName],["Email",form.email],["Department",form.department||"Not specified"],["Project",form.projectName],["Quantity","x"+form.quantity],["Due",form.dueDate?new Date(form.dueDate+"T00:00:00").toLocaleDateString("en-AU",{weekday:"long",day:"numeric",month:"long"}):"—"],["Material",form.material+" — "+form.color],["File",stlFile?stlFile.name+(extraFiles.length>0?" + "+extraFiles.length+" more":""):"—"],["Source URL",form.sourceUrl||"Not provided"]].map(function(pair){
+                {[["Name",form.teacherName],["Email",form.email],["KLA",(function(){var k=KLA_OPTIONS.filter(function(x){return x.id===form.kla;})[0];return k?k.emoji+" "+k.label:"Not specified";})()],["Project",form.projectName],["Quantity","x"+form.quantity],["Due",form.dueDate?new Date(form.dueDate+"T00:00:00").toLocaleDateString("en-AU",{weekday:"long",day:"numeric",month:"long"}):"—"],["Material",form.material+" — "+form.color],["File",stlFile?stlFile.name+(extraFiles.length>0?" + "+extraFiles.length+" more":""):"—"],["Source URL",form.sourceUrl||"Not provided"]].map(function(pair){
                   return <div key={pair[0]} style={{ background:"#162032", borderRadius:8, padding:"10px 12px" }}><div style={{ fontSize:10, color:"#64748b", marginBottom:3 }}>{pair[0]}</div><div style={{ fontSize:12, color:"#9ca3af", wordBreak:"break-all" }}>{pair[1]}</div></div>;
                 })}
               </div>
@@ -3690,7 +3776,7 @@ async function scrapeModelUrl(url) {
               </div>}
 
               <div className="g2s" style={{ gap:7 }}>
-                {[["Teacher",selReq.teacherName],["Email",selReq.email],["Dept.",selReq.department||"—"],["Due",selReq.dueDate?new Date(selReq.dueDate+"T00:00:00").toLocaleDateString("en-AU",{weekday:"short",day:"numeric",month:"short"}):"—"],["Material",selReq.material],["Colour",selReq.color],["Qty","x"+selReq.quantity],["File",selReq.fileName]].map(function(pair){
+                {[["Teacher",selReq.teacherName],["Email",selReq.email],["KLA/Dept.",(function(){var k=KLA_OPTIONS.filter(function(x){return x.id===selReq.kla;})[0];return k?k.emoji+" "+k.label:selReq.department||"—";})()],["Due",selReq.dueDate?new Date(selReq.dueDate+"T00:00:00").toLocaleDateString("en-AU",{weekday:"short",day:"numeric",month:"short"}):"—"],["Material",selReq.material],["Colour",selReq.color],["Qty","x"+selReq.quantity],["File",selReq.fileName]].map(function(pair){
                   return <div key={pair[0]} style={{ background:"#162032", borderRadius:7, padding:"8px 10px" }}><div style={{ fontSize:9, color:"#475569", marginBottom:3 }}>{pair[0]}</div><div style={{ fontSize:11, color:"#94a3b8", wordBreak:"break-all" }}>{pair[1]}</div></div>;
                 })}
               </div>
