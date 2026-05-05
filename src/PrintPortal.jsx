@@ -40,6 +40,21 @@ async function sset(k, v) {
   try { await window.storage.set(k, str); } catch(e) {}
 }
 
+// ─── Password hashing (PBKDF2 via Web Crypto — no library needed) ─────────────
+function genSalt() {
+  var arr = new Uint8Array(16);
+  crypto.getRandomValues(arr);
+  return Array.from(arr).map(function(b){return b.toString(16).padStart(2,"0");}).join("");
+}
+async function hashPassword(pw, salt) {
+  var enc = new TextEncoder();
+  var key = await crypto.subtle.importKey("raw", enc.encode(pw), "PBKDF2", false, ["deriveBits"]);
+  var bits = await crypto.subtle.deriveBits({ name:"PBKDF2", salt:enc.encode(salt), iterations:100000, hash:"SHA-256" }, key, 256);
+  return Array.from(new Uint8Array(bits)).map(function(b){return b.toString(16).padStart(2,"0");}).join("");
+}
+async function verifyPassword(pw, hash, salt) {
+  return (await hashPassword(pw, salt)) === hash;
+}
 
 // ─── Gmail browser compose opener ────────────────────────────────────────────
 // Opens Gmail compose in a new tab — works without a local mail client
@@ -276,11 +291,7 @@ function getLaserEstTime(form) {
 // Bambu X1C build volume (mm)
 var BUILD_VOL = { x: 256, y: 256, z: 256 };
 
-var DEFAULT_ADMINS = [
-  { email: "robertw@macc.nsw.edu.au", name: "Robert W.", role: "Admin", password: "Orbit#4821", mustReset: true },
-  { email: "thomas.rodriguez@macc.nsw.edu.au", name: "Thomas Rodriguez", role: "Head of STEM", password: "Prism#7364", mustReset: true }
-];
-async function loadAdmins() { var s = await sget(AK); if (!s) { await sset(AK, DEFAULT_ADMINS); return DEFAULT_ADMINS; } return s; }
+async function loadAdmins() { return (await sget(AK)) || []; }
 async function saveAdmins(a) { await sset(AK, a); }
 
 // Official Bambu Lab filament catalog
@@ -2153,6 +2164,55 @@ function LaserWizard({ form, setForm, step, setStep, submitted, confetti, laserF
 
 
 
+// ─── First-Run Setup (shown when no admin accounts exist yet) ─────────────────
+function FirstRunSetup({ onComplete }) {
+  var sf=useState({name:"",email:"",role:"Admin",password:"",confirm:""}); var form=sf[0],setForm=sf[1];
+  var serr=useState(""); var err=serr[0],setErr=serr[1];
+  var ssav=useState(false); var saving=ssav[0],setSaving=ssav[1];
+  function upd(k){ return function(e){ setForm(function(f){return Object.assign({},f,{[k]:e.target.value});}); }; }
+  async function submit(e) {
+    e.preventDefault(); setErr("");
+    if (!form.name||!form.email||!form.password) { setErr("All fields are required."); return; }
+    if (form.password.length < 8) { setErr("Password must be at least 8 characters."); return; }
+    if (form.password !== form.confirm) { setErr("Passwords do not match."); return; }
+    setSaving(true);
+    var salt = genSalt(); var hash = await hashPassword(form.password, salt);
+    var newAdmin = {name:form.name,email:form.email,role:form.role,passwordHash:hash,passwordSalt:salt,mustReset:false};
+    await saveAdmins([newAdmin]);
+    onComplete(newAdmin);
+  }
+  return <div style={{ maxWidth:420, margin:"60px auto 0", background:"#1e293b", border:"1px solid #334155", borderRadius:14, overflow:"hidden" }}>
+    <div style={{ borderBottom:"1px solid #334155", padding:"16px 20px" }}>
+      <div style={{ fontSize:16, fontWeight:600 }}>Welcome to Print Lab</div>
+      <div style={{ fontSize:11, color:"#64748b", marginTop:2 }}>No admin accounts exist yet — create the first one to get started.</div>
+    </div>
+    <form onSubmit={submit} style={{ padding:20, display:"flex", flexDirection:"column", gap:14 }}>
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+        <div><Lbl>Your name</Lbl><input value={form.name} onChange={upd("name")} placeholder="e.g. Robert W." style={baseInput} required/></div>
+        <div><Lbl>Role</Lbl>
+          <select value={form.role} onChange={upd("role")} style={selectStyle}>
+            <option>Admin</option><option>Head of STEM</option>
+          </select>
+        </div>
+      </div>
+      <div><Lbl>School email</Lbl><input value={form.email} onChange={upd("email")} type="email" placeholder="you@school.edu.au" style={baseInput} required/></div>
+      <div><Lbl>Password</Lbl><input value={form.password} onChange={upd("password")} type="password" placeholder="Min. 8 characters" style={baseInput} required/></div>
+      <div><Lbl>Confirm password</Lbl><input value={form.confirm} onChange={upd("confirm")} type="password" placeholder="Repeat password" style={baseInput} required/></div>
+      {err&&<div style={{ background:"rgba(239,68,68,0.08)", border:"1px solid rgba(239,68,68,0.2)", borderRadius:7, padding:"9px 12px", fontSize:12, color:"#fca5a5" }}>{err}</div>}
+      <button type="submit" disabled={saving} className="bh" style={{ background:"#ea580c", color:"#fff", border:"none", borderRadius:8, padding:"12px 0", fontFamily:"inherit", fontSize:13, cursor:saving?"not-allowed":"pointer", fontWeight:500 }}>{saving?"Creating account...":"Create Admin Account"}</button>
+    </form>
+  </div>;
+}
+
+// ─── Admin Gate (checks for first-run vs normal login) ────────────────────────
+function AdminGate({ onLogin }) {
+  var sal=useState(null); var adminList=sal[0],setAdminList=sal[1];
+  useEffect(function(){ loadAdmins().then(setAdminList); }, []);
+  if (adminList === null) return <div style={{ textAlign:"center", padding:60, color:"#475569", fontSize:13 }}>Loading...</div>;
+  if (adminList.length === 0) return <FirstRunSetup onComplete={onLogin}/>;
+  return <AdminLogin onLogin={onLogin}/>;
+}
+
 // ─── Admin Login ──────────────────────────────────────────────────────────────
 function AdminLogin({ onLogin }) {
   var se=useState(""); var email=se[0],setEmail=se[1];
@@ -2165,7 +2225,20 @@ function AdminLogin({ onLogin }) {
     var match = admins.filter(function(a){return a.email.toLowerCase()===email.toLowerCase().trim();});
     if (!match.length) { setErr("No admin account found for that email."); setLoading(false); return; }
     var a = match[0];
-    if (a.password !== pw) { setErr("Incorrect password."); setLoading(false); return; }
+    var ok = false;
+    if (a.passwordHash && a.passwordSalt) {
+      ok = await verifyPassword(pw, a.passwordHash, a.passwordSalt);
+    } else if (a.password) {
+      // Legacy plaintext — verify then migrate to hashed format
+      ok = (a.password === pw);
+      if (ok) {
+        var salt = genSalt(); var hash = await hashPassword(pw, salt);
+        var migrated = admins.map(function(x){return x.email===a.email?Object.assign({},x,{passwordHash:hash,passwordSalt:salt,password:undefined}):x;});
+        await saveAdmins(migrated);
+        a = Object.assign({},a,{passwordHash:hash,passwordSalt:salt,password:undefined});
+      }
+    }
+    if (!ok) { setErr("Incorrect password."); setLoading(false); return; }
     onLogin(a);
   }
   return <div style={{ maxWidth:380, margin:"60px auto 0", background:"#1e293b", border:"1px solid #334155", borderRadius:14, overflow:"hidden" }}>
@@ -2190,13 +2263,22 @@ function ChangePasswordModal({ admin, forced, onDone, onCancel }) {
   var serr=useState(""); var err=serr[0],setErr=serr[1];
   async function save() {
     setErr("");
-    if (!forced && cur !== admin.password) { setErr("Current password is incorrect."); return; }
+    if (!forced) {
+      var ok = false;
+      if (admin.passwordHash && admin.passwordSalt) {
+        ok = await verifyPassword(cur, admin.passwordHash, admin.passwordSalt);
+      } else if (admin.password) {
+        ok = (cur === admin.password);
+      }
+      if (!ok) { setErr("Current password is incorrect."); return; }
+    }
     if (nw.length < 8) { setErr("New password must be at least 8 characters."); return; }
     if (nw !== conf) { setErr("Passwords do not match."); return; }
+    var salt = genSalt(); var hash = await hashPassword(nw, salt);
     var admins = await loadAdmins();
-    var updated = admins.map(function(a){return a.email===admin.email?Object.assign({},a,{password:nw,mustReset:false}):a;});
+    var updated = admins.map(function(a){return a.email===admin.email?Object.assign({},a,{passwordHash:hash,passwordSalt:salt,password:undefined,mustReset:false}):a;});
     await saveAdmins(updated);
-    onDone(Object.assign({},admin,{password:nw,mustReset:false}));
+    onDone(Object.assign({},admin,{passwordHash:hash,passwordSalt:salt,password:undefined,mustReset:false}));
   }
   return <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.75)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:200, backdropFilter:"blur(4px)" }}>
     <div style={{ width:"100%", maxWidth:420, background:"#1e293b", border:"1px solid #334155", borderRadius:14, overflow:"hidden" }}>
@@ -2230,7 +2312,9 @@ function ManageAdmins({ currentAdmin, onClose }) {
     setErr("");
     if (!form.name||!form.email||!form.password) { setErr("All fields required."); return; }
     if (admins.filter(function(a){return a.email.toLowerCase()===form.email.toLowerCase();}).length) { setErr("That email already has an account."); return; }
-    var updated = admins.concat([Object.assign({},form,{mustReset:true})]);
+    var salt = genSalt(); var hash = await hashPassword(form.password, salt);
+    var newAdmin = {name:form.name,email:form.email,role:form.role,passwordHash:hash,passwordSalt:salt,mustReset:true};
+    var updated = admins.concat([newAdmin]);
     await saveAdmins(updated); setAdmins(updated); setShowForm(false);
     setForm({name:"",email:"",role:"Admin",password:""});
   }
@@ -3826,7 +3910,7 @@ async function scrapeModelUrl(url) {
 
       {view==="stats"&&<PublicStats requests={requests}/>}
       {view==="status"&&<TeacherStatus requests={requests}/>}
-      {isAdminView&&!admin&&<AdminLogin onLogin={handleLogin}/>}
+      {isAdminView&&!admin&&<AdminGate onLogin={handleLogin}/>}
       {view==="inventory"&&admin&&<FilamentInventory requests={requests} admin={admin}/>}
       {view==="laser-inv"&&admin&&<LaserInventoryPage laserInv={laserInv} setLaserInv={setLaserInv}/>}
       {view==="cad"&&admin&&<CadAdminPage bookings={cadBookings} admin={admin} onSchedule={scheduleCadBooking} onComplete={completeCadBooking} onCancel={cancelCadBooking} onDelete={deleteCadBooking}/>}
@@ -3873,7 +3957,7 @@ async function scrapeModelUrl(url) {
           </div>
           <div style={{ maxWidth:1100, margin:"20px auto 0", background:"rgba(59,130,246,0.06)", border:"1px solid rgba(59,130,246,0.15)", borderRadius:10, padding:"12px 16px", display:"flex", alignItems:"center", gap:12 }}>
             <div style={{ fontSize:20 }}>ℹ️</div>
-            <div style={{ fontSize:11, color:"#64748b", lineHeight:1.7 }}>Not sure which to choose? <span style={{ color:"#60a5fa" }}>3D printing</span> creates physical objects from scratch. <span style={{ color:"#c084fc" }}>Laser cutting/engraving</span> marks or cuts flat materials. <span style={{ color:"#64748b" }}>CAD Services</span> is help preparing and designing files — coming soon.</div>
+            <div style={{ fontSize:11, color:"#64748b", lineHeight:1.7 }}>Not sure which to choose? <span style={{ color:"#60a5fa" }}>3D printing</span> creates physical objects from scratch. <span style={{ color:"#c084fc" }}>Laser cutting/engraving</span> marks or cuts flat materials. <span style={{ color:"#64748b" }}>CAD Services</span> is hands-on help preparing and designing files — book a session above.</div>
           </div>
         </div>}
 
