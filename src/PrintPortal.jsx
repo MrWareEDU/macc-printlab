@@ -14,6 +14,7 @@ var CK = "pl_cad_bookings_v1"; // CAD session bookings
 
 // ─── Storage abstraction (localStorage now, Supabase when configured) ──────────
 var _sb = null; // Supabase client, set by initSupabase()
+var _sbChannel = null; // real-time channel reference
 
 function initSupabase(url, key) {
   if (!url || !key) { _sb = null; return false; }
@@ -21,6 +22,18 @@ function initSupabase(url, key) {
     _sb = window.supabase ? window.supabase.createClient(url, key) : null;
     return !!_sb;
   } catch(e) { _sb = null; return false; }
+}
+
+function subscribeRealtimeQueue(onUpdate) {
+  if (!_sb) return;
+  unsubscribeRealtimeQueue();
+  _sbChannel = _sb.channel("printlab-realtime")
+    .on("postgres_changes", { event: "*", schema: "public", table: "printlab_store" }, onUpdate)
+    .subscribe();
+}
+
+function unsubscribeRealtimeQueue() {
+  if (_sb && _sbChannel) { try { _sb.removeChannel(_sbChannel); } catch(e) {} _sbChannel = null; }
 }
 
 async function sget(k) {
@@ -2576,8 +2589,21 @@ function SupabaseSettingsModal({ sbUrl, setSbUrl, sbKey, setSbKey, sbConnected, 
         <button onClick={onClose} style={{ background:"none", border:"none", color:"#64748b", cursor:"pointer", fontSize:18 }}>×</button>
       </div>
       <div style={{ padding:20, display:"flex", flexDirection:"column", gap:14 }}>
-        <div style={{ background:"rgba(37,99,235,0.07)", border:"1px solid rgba(37,99,235,0.2)", borderRadius:8, padding:"12px 14px", fontSize:11, color:"#94a3b8", lineHeight:1.8 }}>
-          <strong style={{ color:"#60a5fa" }}>Setup:</strong> Create a free Supabase project → create a table called <code style={{ background:"#162032", padding:"1px 5px", borderRadius:3 }}>printlab_store</code> with columns <code style={{ background:"#162032", padding:"1px 5px", borderRadius:3 }}>key text PK, value text, updated_at timestamptz</code> → paste your Project URL and anon key below.
+        <div style={{ background:"rgba(37,99,235,0.07)", border:"1px solid rgba(37,99,235,0.2)", borderRadius:8, padding:"12px 14px", fontSize:11, color:"#94a3b8", lineHeight:1.9 }}>
+          <strong style={{ color:"#60a5fa" }}>One-time setup (≈ 5 min):</strong><br/>
+          1. Create a free project at <strong style={{ color:"#e2e8f0" }}>supabase.com</strong><br/>
+          2. Go to <strong style={{ color:"#e2e8f0" }}>SQL Editor</strong> and run this query:
+          <pre style={{ background:"#0f172a", border:"1px solid #1e3a5f", borderRadius:6, padding:"10px 12px", marginTop:8, marginBottom:0, fontSize:10, color:"#7dd3fc", overflowX:"auto", lineHeight:1.7, fontFamily:"'DM Mono',monospace", whiteSpace:"pre" }}>{`create table if not exists printlab_store (
+  key text primary key,
+  value text,
+  updated_at timestamptz default now()
+);
+alter table printlab_store enable row level security;
+create policy "allow all" on printlab_store
+  for all using (true) with check (true);
+alter publication supabase_realtime
+  add table printlab_store;`}</pre>
+          <div style={{ marginTop:8 }}>3. Go to <strong style={{ color:"#e2e8f0" }}>Project Settings → API</strong> — copy the <strong style={{ color:"#e2e8f0" }}>Project URL</strong> and <strong style={{ color:"#e2e8f0" }}>anon/public key</strong> below</div>
         </div>
         <div>
           <Lbl>Supabase Project URL</Lbl>
@@ -2594,7 +2620,7 @@ function SupabaseSettingsModal({ sbUrl, setSbUrl, sbKey, setSbKey, sbConnected, 
           {sbConnected&&<button onClick={clear} style={{ flex:"0 0 auto", background:"rgba(239,68,68,0.08)", color:"#ef4444", border:"1px solid rgba(239,68,68,0.25)", borderRadius:8, padding:"11px 18px", fontFamily:"inherit", fontSize:13, cursor:"pointer" }}>Disconnect</button>}
         </div>
         <div style={{ fontSize:11, color:"#475569", lineHeight:1.7, paddingTop:8, borderTop:"1px solid #334155" }}>
-          Once connected, the queue will also be accessible when you host on your school server. File storage for STLs will migrate to Supabase Storage automatically when you add <code style={{ background:"#162032", padding:"1px 5px", borderRadius:3 }}>STORAGE_BUCKET</code> to your config.
+          Once connected, all admins share the same live queue. Changes appear instantly via real-time push — no refresh needed. Each admin pastes these credentials once; they're stored in their browser only.
         </div>
       </div>
     </div>
@@ -3255,14 +3281,24 @@ export default function PrintPortal() {
     } catch(e) {}
   }, []);
 
-  // Poll every 30s: refetch requests + check notification-worthy status changes
+  // Real-time subscription when Supabase is connected; fall back to 30s polling otherwise
+  useEffect(function(){
+    if (sbConnected) {
+      subscribeRealtimeQueue(function(){
+        loadReqs().then(function(r){ setRequests(r); });
+      });
+      return unsubscribeRealtimeQueue;
+    }
+  }, [sbConnected]);
+
+  // Poll every 30s when Supabase is not connected (or for notification checks)
   useEffect(function(){
     var id = setInterval(function(){
-      loadReqs().then(function(r){setRequests(r);});
+      if (!sbConnected) loadReqs().then(function(r){setRequests(r);});
       if (trackEmail) checkStatusChanges(requests, trackEmail);
     }, 30000);
     return function(){ clearInterval(id); };
-  }, [trackEmail]); // intentionally omit requests to avoid infinite re-poll loop
+  }, [sbConnected, trackEmail]); // intentionally omit requests to avoid infinite re-poll loop
 
   useEffect(function(){
     loadReqs().then(function(r){setRequests(r);setLoading(false);});
