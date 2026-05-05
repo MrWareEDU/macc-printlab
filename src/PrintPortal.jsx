@@ -72,6 +72,29 @@ function openMailto(to, subject, body) {
   a.click();
   setTimeout(function() { document.body.removeChild(a); }, 500);
 }
+// ─── EmailJS integration ──────────────────────────────────────────────────────
+// Single template approach: one template with {{to_email}}, {{to_name}}, {{subject}}, {{message}}
+var _ejs = { pub: "", svc: "", tpl: "" };
+
+function initEmailJS(pub, svc, tpl) {
+  _ejs = { pub: pub || "", svc: svc || "", tpl: tpl || "" };
+  if (window.emailjs && pub) {
+    try { window.emailjs.init({ publicKey: pub }); return true; } catch(e) { return false; }
+  }
+  return false;
+}
+
+async function sendEmail(to, toName, subject, body) {
+  if (_ejs.pub && _ejs.svc && _ejs.tpl && window.emailjs) {
+    try {
+      await window.emailjs.send(_ejs.svc, _ejs.tpl, { to_email: to, to_name: toName || "", subject: subject, message: body });
+      return;
+    } catch(e) {}
+  }
+  // Fallback: open Gmail compose
+  openMailto(to, subject, body);
+}
+
 // ─── Push notification helpers ────────────────────────────────────────────────
 var NOTIF_PERM_KEY = "pl_notif_perm_v1";
 var NOTIF_STATUS_KEY = "pl_notif_statuses_v1";
@@ -511,7 +534,7 @@ function sendConfirmEmail(req, readyDate) {
     + "Project: " + req.projectName + "\nFile: " + req.fileName + "\nMaterial: " + req.material + " (" + req.color + ")\nQty: x" + req.quantity + "\n"
     + "\nEstimated ready: " + readyStr
     + "\n\nYou'll get another email when printing starts and when it's ready to collect.\n\nThanks,\nPrint Lab, MACC";
-  openMailto(req.email, "Print Request Received - " + req.projectName, body);
+  sendEmail(req.email, req.teacherName, "Print Request Received - " + req.projectName, body);
 }
 function sendStartEmail(req, admin, note) {
   var th = req.stlStats ? req.stlStats.estimatedHours * req.quantity * 0.85 : null;
@@ -521,7 +544,7 @@ function sendStartEmail(req, admin, note) {
   var body = "Hi " + req.teacherName + ",\n\nYour 3D print has started! \uD83D\uDDA8\uFE0F\n\n"
     + "Project: " + req.projectName + "\nMaterial: " + req.material + " - " + req.color + "\nQty: x" + req.quantity + "\nEst. Ready: " + eta
     + noteLine + "\n\nYou'll be notified when it's ready to collect.\n\nThanks,\n" + adminName + ", Print Lab";
-  openMailto(req.email, "Your Print Has Started - " + req.projectName, body);
+  sendEmail(req.email, req.teacherName, "Your Print Has Started - " + req.projectName, body);
 }
 function sendReadyEmail(req, admin, note) {
   var adminName = admin && admin.name ? admin.name : "Print Lab";
@@ -529,7 +552,7 @@ function sendReadyEmail(req, admin, note) {
   var body = "Hi " + req.teacherName + ",\n\nYour 3D print is ready for pickup! \uD83C\uDF89\n\n"
     + "Project: " + req.projectName + "\nQty: x" + req.quantity + " - " + req.material + " (" + req.color + ")"
     + noteLine + "\n\nPlease collect from the Print Lab at your convenience.\n\nThanks,\n" + adminName + ", Print Lab";
-  openMailto(req.email, "Ready for Pickup - " + req.projectName, body);
+  sendEmail(req.email, req.teacherName, "Ready for Pickup - " + req.projectName, body);
 }
 function sendShoppingEmail(items, admin) {
   var adminName = admin && admin.name ? admin.name : "Print Lab";
@@ -726,7 +749,7 @@ function sendRejectEmail(req, admin, reason) {
   if (reason) parts.push("", "Reason: " + reason);
   parts.push("", "Please resubmit or contact the Print Lab.", "", "Thanks,", adminName);
   var body = parts.join("\n");
-  openMailto(req.email, "Print Request Update - " + req.projectName, body);
+  sendEmail(req.email, req.teacherName, "Print Request Update - " + req.projectName, body);
 }
 function sendFailedEmail(req, admin, reason) {
   var adminName = admin && admin.name ? admin.name : "Print Lab";
@@ -734,7 +757,7 @@ function sendFailedEmail(req, admin, reason) {
   if (reason) parts.push("", "Details: " + reason);
   parts.push("", "We will re-queue as soon as possible.", "", "Sorry for the delay,", adminName);
   var body = parts.join("\n");
-  openMailto(req.email, "Print Failed - " + req.projectName, body);
+  sendEmail(req.email, req.teacherName, "Print Failed - " + req.projectName, body);
 }
 // ─── Responsive hook ──────────────────────────────────────────────────────────
 function useWidth() {
@@ -2578,6 +2601,61 @@ function SupabaseSettingsModal({ sbUrl, setSbUrl, sbKey, setSbKey, sbConnected, 
   </div>;
 }
 
+// ─── Email Settings Modal ─────────────────────────────────────────────────────
+function EmailSettingsModal({ onClose }) {
+  var EJ_PUB = "pl_ej_pub"; var EJ_SVC = "pl_ej_svc"; var EJ_TPL = "pl_ej_tpl";
+  var spub=useState(function(){try{return localStorage.getItem(EJ_PUB)||"";}catch(e){return "";}}); var pub=spub[0],setPub=spub[1];
+  var ssvc=useState(function(){try{return localStorage.getItem(EJ_SVC)||"";}catch(e){return "";}}); var svc=ssvc[0],setSvc=ssvc[1];
+  var stpl=useState(function(){try{return localStorage.getItem(EJ_TPL)||"";}catch(e){return "";}}); var tpl=stpl[0],setTpl=stpl[1];
+  var stest=useState("idle"); var testState=stest[0],setTestState=stest[1];
+  async function save() {
+    setTestState("testing");
+    try {
+      localStorage.setItem(EJ_PUB, pub); localStorage.setItem(EJ_SVC, svc); localStorage.setItem(EJ_TPL, tpl);
+      var ok = initEmailJS(pub, svc, tpl);
+      if (ok) { setTestState("ok"); } else { setTestState("fail"); }
+    } catch(e) { setTestState("fail"); }
+  }
+  function clear() {
+    try { localStorage.removeItem(EJ_PUB); localStorage.removeItem(EJ_SVC); localStorage.removeItem(EJ_TPL); } catch(e) {}
+    setPub(""); setSvc(""); setTpl(""); initEmailJS("","",""); setTestState("idle"); onClose();
+  }
+  return <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.75)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:200, backdropFilter:"blur(4px)" }}>
+    <div style={{ width:"100%", maxWidth:540, background:"#1e293b", border:"1px solid #334155", borderRadius:14, overflow:"hidden" }}>
+      <div style={{ borderBottom:"1px solid #334155", padding:"14px 20px", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+        <div>
+          <div style={{ fontSize:15, fontWeight:600 }}>Email Notifications — EmailJS</div>
+          <div style={{ fontSize:11, color:"#64748b", marginTop:2 }}>Send emails automatically without opening Gmail each time</div>
+        </div>
+        <button onClick={onClose} style={{ background:"none", border:"none", color:"#64748b", cursor:"pointer", fontSize:18 }}>×</button>
+      </div>
+      <div style={{ padding:20, display:"flex", flexDirection:"column", gap:14 }}>
+        <div style={{ background:"rgba(245,158,11,0.07)", border:"1px solid rgba(245,158,11,0.2)", borderRadius:8, padding:"12px 14px", fontSize:11, color:"#94a3b8", lineHeight:1.9 }}>
+          <strong style={{ color:"#fbbf24" }}>One-time setup:</strong><br/>
+          1. Create a free account at <strong style={{ color:"#e2e8f0" }}>emailjs.com</strong> (200 emails/month free)<br/>
+          2. Add a Gmail service under <em>Email Services</em> — copy the <strong style={{ color:"#e2e8f0" }}>Service ID</strong><br/>
+          3. Create one email template with variables <code style={{ background:"#162032", padding:"1px 5px", borderRadius:3 }}>{"{{to_email}}"}</code> <code style={{ background:"#162032", padding:"1px 5px", borderRadius:3 }}>{"{{subject}}"}</code> <code style={{ background:"#162032", padding:"1px 5px", borderRadius:3 }}>{"{{message}}"}</code> — copy the <strong style={{ color:"#e2e8f0" }}>Template ID</strong><br/>
+          4. Copy your <strong style={{ color:"#e2e8f0" }}>Public Key</strong> from <em>Account → General</em>
+        </div>
+        <div><Lbl>Public Key</Lbl><input value={pub} onChange={function(e){setPub(e.target.value);setTestState("idle");}} placeholder="user_xxxxxxxxxxxxxxxxxxxx" style={Object.assign({},baseInput,{fontSize:11,fontFamily:"'DM Mono',monospace"})}/></div>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+          <div><Lbl>Service ID</Lbl><input value={svc} onChange={function(e){setSvc(e.target.value);setTestState("idle");}} placeholder="service_xxxxxxx" style={Object.assign({},baseInput,{fontSize:12})}/></div>
+          <div><Lbl>Template ID</Lbl><input value={tpl} onChange={function(e){setTpl(e.target.value);setTestState("idle");}} placeholder="template_xxxxxxx" style={Object.assign({},baseInput,{fontSize:12})}/></div>
+        </div>
+        {testState==="ok"&&<div style={{ background:"rgba(34,197,94,0.08)", border:"1px solid rgba(34,197,94,0.25)", borderRadius:8, padding:"10px 14px", fontSize:12, color:"#4ade80" }}>✓ Saved! Emails will now send automatically via EmailJS.</div>}
+        {testState==="fail"&&<div style={{ background:"rgba(239,68,68,0.08)", border:"1px solid rgba(239,68,68,0.25)", borderRadius:8, padding:"10px 14px", fontSize:12, color:"#fca5a5" }}>✗ Could not initialise EmailJS. Check that your Public Key is correct and the EmailJS script loaded.</div>}
+        <div style={{ display:"flex", gap:8 }}>
+          <button onClick={save} disabled={!pub||!svc||!tpl} className="bh" style={{ flex:1, background:(!pub||!svc||!tpl)||testState==="testing"?"#334155":"#d97706", color:"#fff", border:"none", borderRadius:8, padding:"11px 0", fontFamily:"inherit", fontSize:13, cursor:"pointer", fontWeight:500 }}>{testState==="testing"?"Saving...":"Save"}</button>
+          {(_ejs.pub)&&<button onClick={clear} style={{ flex:"0 0 auto", background:"rgba(239,68,68,0.08)", color:"#ef4444", border:"1px solid rgba(239,68,68,0.25)", borderRadius:8, padding:"11px 18px", fontFamily:"inherit", fontSize:13, cursor:"pointer" }}>Clear</button>}
+        </div>
+        <div style={{ fontSize:11, color:"#475569", lineHeight:1.7, paddingTop:8, borderTop:"1px solid #334155" }}>
+          If EmailJS is not configured, all notification buttons fall back to opening a pre-filled Gmail compose window as before.
+        </div>
+      </div>
+    </div>
+  </div>;
+}
+
 // ─── Laser Inventory Page ─────────────────────────────────────────────────────
 function LaserInventoryPage({ laserInv, setLaserInv }) {
   var srestk=useState(null); var restockId=srestk[0],setRestockId=srestk[1];
@@ -3149,6 +3227,7 @@ export default function PrintPortal() {
   var ssburl=useState(function(){try{return localStorage.getItem("pl_sb_url")||"";}catch(e){return "";}}); var sbUrl=ssburl[0],setSbUrl=ssburl[1];
   var ssbkey=useState(function(){try{return localStorage.getItem("pl_sb_key")||"";}catch(e){return "";}}); var sbKey=ssbkey[0],setSbKey=ssbkey[1];
   var ssbconn=useState(false); var sbConnected=ssbconn[0],setSbConnected=ssbconn[1];
+  var sejset=useState(false); var showEJSettings=sejset[0],setShowEJSettings=sejset[1];
   var snotif=useState(function(){try{return typeof Notification!=="undefined"&&Notification.permission==="granted";}catch(e){return false;}}); var notifEnabled=snotif[0],setNotifEnabled=snotif[1];
   var stemail=useState(""); var trackEmail=stemail[0],setTrackEmail=stemail[1];
   var slasfile=useState(null); var laserFileData=slasfile[0],setLaserFileData=slasfile[1];
@@ -3164,6 +3243,16 @@ export default function PrintPortal() {
   useEffect(function(){
     var url = sbUrl; var key = sbKey;
     if (url && key) { var ok = initSupabase(url, key); setSbConnected(ok); }
+  }, []);
+
+  // Init EmailJS if previously configured
+  useEffect(function(){
+    try {
+      var pub=localStorage.getItem("pl_ej_pub")||"";
+      var svc=localStorage.getItem("pl_ej_svc")||"";
+      var tpl=localStorage.getItem("pl_ej_tpl")||"";
+      if (pub && svc && tpl) initEmailJS(pub, svc, tpl);
+    } catch(e) {}
   }, []);
 
   // Poll every 30s: refetch requests + check notification-worthy status changes
@@ -3540,7 +3629,7 @@ async function scrapeModelUrl(url) {
         "","Track your job status at: "+window.location.href,"","Thanks,","MACC Print Lab"
       ].filter(Boolean);
       var body = parts.join("\n");
-      setTimeout(function(){openMailto(req.email, "Print Request Received - "+req.projectName, body);},800);
+      sendEmail(req.email, req.teacherName, "Print Request Received - "+req.projectName, body);
     })();
     setTimeout(function(){setShowConfetti(false);},3000);
     setTimeout(function(){setSubmitted(false);setStep(0);setForm(function(prev){return {teacherName:prev.teacherName,email:prev.email,department:prev.department,projectName:"",purpose:"",quantity:1,dueDate:"",material:"PLA",color:"",filamentId:"",notes:"",sourceUrl:"",priority:false,kla:"",syllabusOutcome:""};});setStlFile(null);setStlStats(null);setStlFileData(null);setStl3MFMeta(null);setExtraFiles([]);setUrlInfo("");setUrlScrapedData(null);setUrlScraping(false);setSubmittedReadyDate(null);},3500);
@@ -3572,7 +3661,7 @@ async function scrapeModelUrl(url) {
         req.dueDate?"Needed by: "+new Date(req.dueDate+"T00:00:00").toLocaleDateString("en-AU",{weekday:"long",day:"numeric",month:"long"}):"",
         "","Track your status at: "+window.location.href,"","Thanks,","MACC Print Lab"].filter(Boolean);
       var body = parts.join("\n");
-      setTimeout(function(){openMailto(req.email, "Laser Request Received - "+req.projectName, body);},800);
+      sendEmail(req.email, req.teacherName, "Laser Request Received - "+req.projectName, body);
     })();
     setTimeout(function() { setLaserConfetti(false); }, 3000);
     setTimeout(function() {
@@ -3609,7 +3698,7 @@ async function scrapeModelUrl(url) {
       "You'll receive a calendar invite once confirmed.","",
       "Check your booking status at: "+window.location.href,"","Thanks,","MACC Print Lab"
     ].filter(Boolean);
-    openMailto(booking.email,"CAD Session Request Received - "+booking.projectGoal, parts.join("\n"));
+    sendEmail(booking.email, booking.teacherName, "CAD Session Request Received - "+booking.projectGoal, parts.join("\n"));
   }
 
   async function scheduleCadBooking(id, dateTime, adminNote) {
@@ -3628,7 +3717,7 @@ async function scrapeModelUrl(url) {
         adminNote?"Note: "+adminNote:"",
         "","Please reply to this email if you need to reschedule.","","See you then!","MACC Print Lab"
       ].filter(Boolean);
-      openMailto(booking.email,"CAD Session Confirmed — "+d.toLocaleDateString("en-AU",{weekday:"long",day:"numeric",month:"long"}),parts.join("\n"));
+      sendEmail(booking.email, booking.teacherName, "CAD Session Confirmed — "+d.toLocaleDateString("en-AU",{weekday:"long",day:"numeric",month:"long"}), parts.join("\n"));
     }
   }
 
@@ -3861,6 +3950,7 @@ async function scrapeModelUrl(url) {
     {showTemplates&&<TemplatesModal onUse={useTemplate} onClose={function(){setShowTemplates(false);}}/>}
     {showLaserInv&&<LaserConsumablesModal laserInv={laserInv} setLaserInv={setLaserInv} onClose={function(){setShowLaserInv(false);}}/>}
     {showSBSettings&&<SupabaseSettingsModal sbUrl={sbUrl} setSbUrl={setSbUrl} sbKey={sbKey} setSbKey={setSbKey} sbConnected={sbConnected} setSbConnected={setSbConnected} onClose={function(){setShowSBSettings(false);}}/>}
+    {showEJSettings&&<EmailSettingsModal onClose={function(){setShowEJSettings(false);}}/>}
 
     {/* NAV */}
     <nav style={{ borderBottom:"1px solid #0d1220", background:"rgba(15,23,42,0.98)", backdropFilter:"blur(10px)", position:"sticky", top:0, zIndex:100 }}>
@@ -4266,6 +4356,7 @@ async function scrapeModelUrl(url) {
               <button onClick={function(){exportCSV(requests);}} className="bh" style={{ background:"#1e293b", color:"#94a3b8", border:"1px solid #334155", borderRadius:6, padding:"6px 14px", fontSize:11, cursor:"pointer", fontFamily:"inherit" }}>Export CSV</button>
               {admin&&admin.role==="Head of STEM"&&<button onClick={function(){setShowLaserInv(true);}} className="bh" style={{ background:"#1e293b", color:"#a78bfa", border:"1px solid #334155", borderRadius:6, padding:"6px 14px", fontSize:11, cursor:"pointer", fontFamily:"inherit" }}>Laser Consumables</button>}
               {admin&&<button onClick={function(){setShowSBSettings(true);}} className="bh" style={{ background:"#1e293b", color:"#64748b", border:"1px solid #334155", borderRadius:6, padding:"6px 14px", fontSize:11, cursor:"pointer", fontFamily:"inherit" }}>Shared Queue</button>}
+              {admin&&<button onClick={function(){setShowEJSettings(true);}} className="bh" style={{ background:"#1e293b", color:"#64748b", border:"1px solid #334155", borderRadius:6, padding:"6px 14px", fontSize:11, cursor:"pointer", fontFamily:"inherit" }}>Email Settings</button>}
             </div>
           </div>
           <div style={{ display:"flex", gap:8, alignItems:"center", marginBottom:10 }}>
