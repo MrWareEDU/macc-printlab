@@ -768,12 +768,15 @@ function Btn({ onClick, color, bg, border, children, disabled, style }) {
   var bd=disabled?"1px solid #111827":(border||"none");
   return <button onClick={disabled?undefined:onClick} disabled={!!disabled} className={disabled?"":"bh"} style={Object.assign({ background:bgC, color:txC, border:bd, borderRadius:8, padding:"11px 0", fontFamily:"'DM Mono',monospace", fontSize:11, cursor:disabled?"not-allowed":"pointer", letterSpacing:"0.08em", textTransform:"uppercase", width:"100%", boxShadow:disabled?"none":"0 0 18px rgba(249,115,22,0.2)" },style||{})}>{children}</button>;
 }
-function NavBtns({ onBack, onNext, disabled, label }) {
-  return <div style={{ display:"flex", gap:10, marginTop:4 }}>
-    {onBack&&<button onClick={onBack} style={{ flex:"0 0 auto", background:"transparent", color:"#64748b", border:"1px solid #111827", borderRadius:8, padding:"12px 22px", fontFamily:"'DM Mono',monospace", fontSize:11, cursor:"pointer" }}>← Back</button>}
-    <button onClick={disabled?undefined:onNext} disabled={!!disabled} className={disabled?"":"bh"} style={{ flex:1, background:disabled?"#0a0f1a":"#ea580c", color:disabled?"#475569":"#fff", border:"none", borderRadius:8, padding:"13px 0", fontFamily:"'DM Mono',monospace", fontSize:12, cursor:disabled?"not-allowed":"pointer", letterSpacing:"0.1em", textTransform:"uppercase" }}>
-      {label||"Continue →"}
-    </button>
+function NavBtns({ onBack, onNext, disabled, label, hint }) {
+  return <div style={{ marginTop:4 }}>
+    <div style={{ display:"flex", gap:10 }}>
+      {onBack&&<button onClick={onBack} style={{ flex:"0 0 auto", background:"transparent", color:"#64748b", border:"1px solid #111827", borderRadius:8, padding:"12px 22px", fontFamily:"'DM Mono',monospace", fontSize:11, cursor:"pointer" }}>← Back</button>}
+      <button onClick={disabled?undefined:onNext} disabled={!!disabled} className={disabled?"":"bh"} style={{ flex:1, background:disabled?"#0a0f1a":"#ea580c", color:disabled?"#475569":"#fff", border:"none", borderRadius:8, padding:"13px 0", fontFamily:"'DM Mono',monospace", fontSize:12, cursor:disabled?"not-allowed":"pointer", letterSpacing:"0.1em", textTransform:"uppercase" }}>
+        {label||"Continue →"}
+      </button>
+    </div>
+    {disabled&&hint&&<div style={{ fontSize:10, color:"#ef4444", marginTop:6, textAlign:"center", fontStyle:"italic", opacity:0.8 }}>Still needed: {hint}</div>}
   </div>;
 }
 // ─── Confetti ─────────────────────────────────────────────────────────────────
@@ -936,14 +939,15 @@ function Countdown({ startedAt, totalHours }) {
 
 // ─── Teacher Status ────────────────────────────────────────────────────────────
 function TeacherStatus({ requests }) {
-  var se = useState(""); var email = se[0], setEmail = se[1];
+  var se = useState(function(){try{return localStorage.getItem("pl_status_email_v1")||"";}catch(e){return "";}}); var email = se[0], setEmail = se[1];
   var ss = useState(null); var searched = ss[0], setSearched = ss[1];
   function search() {
     var lc = email.toLowerCase().trim();
     setSearched(requests.filter(function(r) { return r.email && r.email.toLowerCase() === lc; }));
-    // Seed initial status snapshot for notifications
     checkStatusChanges(requests, lc);
+    try{localStorage.setItem("pl_status_email_v1",lc);}catch(e){}
   }
+  function clearSavedEmail() { try{localStorage.removeItem("pl_status_email_v1");}catch(e){} setEmail(""); setSearched(null); }
   function queuePosition(req) {
     var ahead = requests.filter(function(r) {
       return (r.status === "Queued" || r.status === "Printing") && r.id !== req.id && new Date(r.submittedAt) <= new Date(req.submittedAt);
@@ -976,10 +980,11 @@ function TeacherStatus({ requests }) {
       <div style={{ fontSize:13, color:"#64748b" }}>Enter your school email to see all your print and laser requests</div>
     </div>
     <div style={{ maxWidth:540, margin:"0 auto" }}>
-      <div style={{ display:"flex", gap:8, marginBottom:16 }}>
+      <div style={{ display:"flex", gap:8, marginBottom:4 }}>
         <input value={email} onChange={function(e){setEmail(e.target.value);}} onKeyDown={function(e){if(e.key==="Enter")search();}} placeholder="your.email@macc.nsw.edu.au" style={Object.assign({},baseInput,{flex:1})}/>
         <button onClick={search} disabled={!email} className="bh" style={{ background:"#2563eb", color:"#fff", border:"none", borderRadius:8, padding:"10px 20px", fontFamily:"inherit", fontSize:13, cursor:email?"pointer":"not-allowed", fontWeight:500, whiteSpace:"nowrap" }}>Check Status</button>
       </div>
+      {email&&<div style={{ textAlign:"right", marginBottom:12 }}><button onClick={clearSavedEmail} style={{ background:"none", border:"none", color:"#475569", fontSize:11, cursor:"pointer", fontFamily:"inherit" }}>× Clear saved email</button></div>}
       {("Notification" in window)&&<div style={{ background:"rgba(59,130,246,0.05)", border:"1px solid rgba(59,130,246,0.15)", borderRadius:10, padding:"12px 16px", marginBottom:24, display:"flex", alignItems:"center", gap:12 }}>
         <div style={{ flex:1 }}>
           <div style={{ fontSize:13, fontWeight:500, color:"#f1f5f9", marginBottom:2 }}>Job notifications</div>
@@ -1844,7 +1849,7 @@ function FilamentPicker({ inv, form, setForm }) {
 }
 
 // ─── Laser / Cut Wizard ───────────────────────────────────────────────────────
-function LaserWizard({ form, setForm, step, setStep, submitted, confetti, laserFile, setLaserFile, lfileRef, onSubmit, requests, setFileData, setDims, fileData, dims }) {
+function LaserWizard({ form, setForm, step, setStep, submitted, confetti, laserFile, setLaserFile, lfileRef, onSubmit, requests, setFileData, setDims, fileData, dims, onReset }) {
   var lfileDropRef = useRef(null);
 
   function handleLaserFile(file) {
@@ -1893,7 +1898,7 @@ function LaserWizard({ form, setForm, step, setStep, submitted, confetti, laserF
   var lq = requests.filter(function(r) { return r.jobCategory === "laser" && (r.status === "Queued" || r.status === "Printing"); }).length;
 
   if (submitted) {
-    return <div style={{ textAlign:"center", padding:"80px 0" }}>
+    return <div style={{ textAlign:"center", padding:"60px 0" }}>
       {confetti && <Confetti/>}
       <div className="ci" style={{ fontSize:80, marginBottom:16 }}>🔴</div>
       <div style={{ fontFamily:"'Syne',sans-serif", fontSize:28, fontWeight:900, color:"#a855f7" }}>Laser job submitted!</div>
@@ -1902,6 +1907,7 @@ function LaserWizard({ form, setForm, step, setStep, submitted, confetti, laserF
         <div style={{ fontSize:10, color:"#a855f7", letterSpacing:"0.1em", marginBottom:4 }}>JOBS AHEAD IN LASER QUEUE</div>
         <div style={{ fontFamily:"'Syne',sans-serif", fontSize:20, fontWeight:800, color:"#a855f7" }}>{lq}</div>
       </div>}
+      {onReset&&<button onClick={onReset} className="bh" style={{ marginTop:28, background:"rgba(168,85,247,0.1)", color:"#a855f7", border:"1px solid rgba(168,85,247,0.3)", borderRadius:10, padding:"12px 28px", fontFamily:"inherit", fontSize:13, cursor:"pointer", fontWeight:500 }}>Submit another request</button>}
     </div>;
   }
 
@@ -1929,6 +1935,10 @@ function LaserWizard({ form, setForm, step, setStep, submitted, confetti, laserF
     {/* ── Step 0: Details + File ── */}
     {step===0&&<div className="fu" style={{ display:"flex", flexDirection:"column", gap:14 }}>
       <Card title="Your details">
+        {(function(){var saved=null;try{saved=JSON.parse(localStorage.getItem(UK)||"null");}catch(e){}return saved&&saved.teacherName?<div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", background:"rgba(20,184,166,0.08)", border:"1px solid rgba(20,184,166,0.25)", borderRadius:8, padding:"8px 12px", marginBottom:8 }}>
+          <div style={{ fontSize:12, color:"#2dd4bf" }}>Welcome back, {saved.teacherName}</div>
+          <button onClick={function(){try{localStorage.removeItem(UK);}catch(e){}setForm(function(f){return Object.assign({},f,{teacherName:"",email:"",department:""});});}} style={{ background:"none", border:"none", color:"#475569", fontSize:11, cursor:"pointer", fontFamily:"inherit" }}>Not you? Clear</button>
+        </div>:null;})()}
         <div className="g2s">
           <div><Lbl>Your name</Lbl><input value={form.teacherName} placeholder="e.g. Ms. Johnson" onChange={function(e){setForm(function(f){return Object.assign({},f,{teacherName:e.target.value});});}} style={baseInput}/></div>
           <div><Lbl>School email</Lbl><input value={form.email} placeholder="you@macc.nsw.edu.au" onChange={function(e){setForm(function(f){return Object.assign({},f,{email:e.target.value});});}} style={baseInput}/><div style={{ fontSize:10, color:"#64748b", marginTop:4 }}>We'll email you when your job is ready</div></div>
@@ -2009,7 +2019,7 @@ function LaserWizard({ form, setForm, step, setStep, submitted, confetti, laserF
         </div>
       </Card>
 
-      <NavBtns onNext={function(){setStep(1);}} disabled={!form.teacherName||!form.email||!laserFile} label="Choose job options"/>
+      <NavBtns onNext={function(){setStep(1);}} disabled={!form.teacherName||!form.email||!laserFile} label="Choose job options" hint={[!form.teacherName&&"Your name",!form.email&&"Email",!laserFile&&"Design file"].filter(Boolean).join(", ")}/>
     </div>}
 
     {/* ── Step 1: Job Options ── */}
@@ -2041,13 +2051,15 @@ function LaserWizard({ form, setForm, step, setStep, submitted, confetti, laserF
             var sel = form.laserMaterial === mat.id;
             var jt = form.jobType;
             var blocked = (jt==="Engrave"&&!mat.canEngrave) || (jt==="Cut"&&!mat.canCut) || (jt==="Vinyl Cut"&&!mat.bladeOk);
+            var blockedReason = blocked?(jt==="Vinyl Cut"?"Not available for Vinyl Cut":jt==="Engrave"?"Cannot be engraved":"Cannot be cut"):null;
             return <div key={mat.id} className={blocked?"":"rh"} onClick={blocked?undefined:function(){setForm(function(f){return Object.assign({},f,{laserMaterial:mat.id,thickness:""});});}} style={{ display:"flex", alignItems:"center", gap:12, padding:"11px 14px", border:"2px solid "+(sel?"#a855f7":"#334155"), borderRadius:10, background:sel?"rgba(168,85,247,0.08)":"#162032", cursor:blocked?"not-allowed":"pointer", opacity:blocked?0.35:1, transition:"all .15s" }}>
               <div style={{ fontSize:24, flexShrink:0 }}>{mat.emoji}</div>
               <div style={{ flex:1 }}>
                 <div style={{ fontSize:13, fontWeight:500, color:sel?"#d8b4fe":"#e2e8f0" }}>{mat.name}</div>
                 <div style={{ fontSize:10, color:"#64748b", marginTop:2 }}>{mat.desc}</div>
+                {blocked&&<div style={{ fontSize:9, color:"#ef4444", marginTop:3, opacity:0.8 }}>{blockedReason}</div>}
                 {!blocked&&mat.canCut&&mat.maxMm40W>0&&<div style={{ fontSize:9, color:"#64748b", marginTop:3 }}>40W max cut: {mat.maxMm40W}mm</div>}
-                {mat.canEngrave&&!mat.canCut&&<div style={{ fontSize:9, color:"#64748b", marginTop:3 }}>Engrave only — cutting not supported</div>}
+                {!blocked&&mat.canEngrave&&!mat.canCut&&<div style={{ fontSize:9, color:"#64748b", marginTop:3 }}>Engrave only — cutting not supported</div>}
               </div>
               {sel&&<div style={{ width:18, height:18, borderRadius:"50%", background:"#a855f7", display:"flex", alignItems:"center", justifyContent:"center", fontSize:10, color:"#fff", flexShrink:0 }}>✓</div>}
             </div>;
@@ -2117,7 +2129,7 @@ function LaserWizard({ form, setForm, step, setStep, submitted, confetti, laserF
         <textarea value={form.notes} rows={3} placeholder="e.g. font preferences, depth of engrave, specific positioning notes..." onChange={function(e){setForm(function(f){return Object.assign({},f,{notes:e.target.value});});}} style={Object.assign({},baseInput,{resize:"vertical",lineHeight:1.7})}/>
       </Card>
 
-      <NavBtns onBack={function(){setStep(0);}} onNext={function(){setStep(2);}} disabled={!form.projectName||!form.dueDate||hasErrors} label="Review my request"/>
+      <NavBtns onBack={function(){setStep(0);}} onNext={function(){setStep(2);}} disabled={!form.projectName||!form.dueDate||hasErrors} label="Review my request" hint={[!form.projectName&&"Project name",!form.dueDate&&"Date needed by",hasErrors&&"Fix quantity/dimension errors"].filter(Boolean).join(", ")}/>
     </div>}
 
     {/* ── Step 2: Review ── */}
@@ -2816,7 +2828,7 @@ function CadBookingWizard({ onSubmit, onBack, requests }) {
         </div>
       </Card>
 
-      <NavBtns onBack={onBack} onNext={function(){setStep(1);}} disabled={!step0ok} label="Next — Tell us about your project"/>
+      <NavBtns onBack={onBack} onNext={function(){setStep(1);}} disabled={!step0ok} label="Next — Tell us about your project" hint={[!form.teacherName&&"Your name",!form.email&&"Email",!form.helpType&&"Type of help needed"].filter(Boolean).join(", ")}/>
     </div>}
 
     {/* ── Step 1: Project details ── */}
@@ -2842,7 +2854,7 @@ function CadBookingWizard({ onSubmit, onBack, requests }) {
           <textarea value={form.extraContext} rows={2} placeholder="e.g. I have an STL file that won't slice correctly, or I need this done by end of term..." onChange={function(e){upd("extraContext",e.target.value);}} style={Object.assign({},baseInput,{resize:"vertical",lineHeight:1.7})}/>
         </div>
       </Card>
-      <NavBtns onBack={function(){setStep(0);}} onNext={function(){setStep(2);}} disabled={!step1ok} label="Next — Choose a time"/>
+      <NavBtns onBack={function(){setStep(0);}} onNext={function(){setStep(2);}} disabled={!step1ok} label="Next — Choose a time" hint={[!form.projectGoal&&"Project description",!form.skillLevel&&"Experience level"].filter(Boolean).join(", ")}/>
     </div>}
 
     {/* ── Step 2: Session preferences ── */}
@@ -3153,6 +3165,13 @@ export default function PrintPortal() {
   var stemail=useState(""); var trackEmail=stemail[0],setTrackEmail=stemail[1];
   var slasfile=useState(null); var laserFileData=slasfile[0],setLaserFileData=slasfile[1];
   var ssvgdims=useState(null); var svgDims=ssvgdims[0],setSvgDims=ssvgdims[1];
+  var stoast=useState(null); var toast=stoast[0],setToast=stoast[1];
+  var scdel=useState(null); var confirmDeleteId=scdel[0],setConfirmDeleteId=scdel[1];
+
+  function showToast(msg, color) {
+    setToast({msg:msg,color:color||"#22c55e"});
+    setTimeout(function(){setToast(null);},2500);
+  }
 
   useEffect(function(){
     if ("serviceWorker" in navigator) {
@@ -3543,8 +3562,9 @@ async function scrapeModelUrl(url) {
       setTimeout(function(){openMailto(req.email, "Print Request Received - "+req.projectName, body);},800);
     })();
     setTimeout(function(){setShowConfetti(false);},3000);
-    setTimeout(function(){setSubmitted(false);setStep(0);setForm(function(prev){return {teacherName:prev.teacherName,email:prev.email,department:prev.department,projectName:"",purpose:"",quantity:1,dueDate:"",material:"PLA",color:"",filamentId:"",notes:"",sourceUrl:"",priority:false,kla:"",syllabusOutcome:""};});setStlFile(null);setStlStats(null);setStlFileData(null);setStl3MFMeta(null);setExtraFiles([]);setUrlInfo("");setUrlScrapedData(null);setUrlScraping(false);setSubmittedReadyDate(null);},3500);
+    setTimeout(function(){setSubmitted(false);setStep(0);setForm(function(prev){return {teacherName:prev.teacherName,email:prev.email,department:prev.department,projectName:"",purpose:"",quantity:1,dueDate:"",material:"PLA",color:"",filamentId:"",notes:"",sourceUrl:"",priority:false,kla:"",syllabusOutcome:""};});setStlFile(null);setStlStats(null);setStlFileData(null);setStl3MFMeta(null);setExtraFiles([]);setUrlInfo("");setUrlScrapedData(null);setUrlScraping(false);setSubmittedReadyDate(null);},8000);
   }
+  function resetPrintForm(){setSubmitted(false);setStep(0);setForm(function(prev){return {teacherName:prev.teacherName,email:prev.email,department:prev.department,projectName:"",purpose:"",quantity:1,dueDate:"",material:"PLA",color:"",filamentId:"",notes:"",sourceUrl:"",priority:false,kla:"",syllabusOutcome:""};});setStlFile(null);setStlStats(null);setStlFileData(null);setStl3MFMeta(null);setExtraFiles([]);setUrlInfo("");setUrlScrapedData(null);setUrlScraping(false);setSubmittedReadyDate(null);}
 
   async function handleLaserSubmit() {
     var req = Object.assign({}, lform, {
@@ -3575,17 +3595,9 @@ async function scrapeModelUrl(url) {
       setTimeout(function(){openMailto(req.email, "Laser Request Received - "+req.projectName, body);},800);
     })();
     setTimeout(function() { setLaserConfetti(false); }, 3000);
-    setTimeout(function() {
-      setLaserSubmitted(false); setLaserStep(0);
-      setLform(function(prev){return {teacherName:prev.teacherName,email:prev.email,department:prev.department,
-        projectName:"",purpose:"",jobType:"Engrave",laserMaterial:"wood",thickness:"",laserPower:"40W",
-        designWidth:"",designHeight:"",quantity:1,dueDate:"",notes:"",sourceUrl:"",
-        kla:"",syllabusOutcome:"",priority:false};});
-      setLaserFile(null);
-      setLaserFileData(null);
-      setSvgDims(null);
-    }, 3500);
+    setTimeout(function() { resetLaserForm(); }, 8000);
   }
+  function resetLaserForm(){setLaserSubmitted(false);setLaserStep(0);setLform(function(prev){return {teacherName:prev.teacherName,email:prev.email,department:prev.department,projectName:"",purpose:"",jobType:"Engrave",laserMaterial:"wood",thickness:"",laserPower:"40W",designWidth:"",designHeight:"",quantity:1,dueDate:"",notes:"",sourceUrl:"",kla:"",syllabusOutcome:"",priority:false};});setLaserFile(null);setLaserFileData(null);setSvgDims(null);}
 
   async function handleCadSubmit(booking) {
     var updated = [booking].concat(cadBookings);
@@ -3650,6 +3662,7 @@ async function scrapeModelUrl(url) {
   async function approveReq(id) {
     var updated=requests.map(function(r){if(r.id!==id)return r;return Object.assign({},r,{status:"Queued",log:addLog(r,"Approved by "+admin.name)});});
     setRequests(updated);await saveReqs(updated);syncSel(updated);
+    showToast("✓ Job approved","#22c55e");
   }
 
   async function rejectReq(id, reason) {
@@ -3658,6 +3671,7 @@ async function scrapeModelUrl(url) {
     var req=requests.filter(function(r){return r.id===id;})[0];
     if(req) sendRejectEmail(req, admin, reason);
     setShowReject(false);setRejectNote("");
+    showToast("✗ Job rejected","#ef4444");
   }
 
   async function markFailed(req, reason) {
@@ -3665,6 +3679,7 @@ async function scrapeModelUrl(url) {
     setRequests(updated);await saveReqs(updated);syncSel(updated);
     sendFailedEmail(req, admin, reason);
     setShowFail(false);setFailNote("");
+    showToast("⚠ Job marked as failed","#f59e0b");
   }
 
   async function requeueFailed(id) {
@@ -3719,6 +3734,7 @@ async function scrapeModelUrl(url) {
     setRequests(updated);await saveReqs(updated);
     var fresh=updated.filter(function(r){return r.id===req.id;})[0];setSelReq(fresh);
     sendStartEmail(fresh,admin,adminNote);setAdminNote("");setConfStart(false);
+    showToast("🖨️ Print started","#3b82f6");
   }
 
   async function markDone(req){
@@ -3731,6 +3747,7 @@ async function scrapeModelUrl(url) {
     var updated=requests.map(function(r){if(r.id!==req.id)return r;return Object.assign({},r,{status:"Done",filamentUsedG:wG,estimatedCostAUD:costAUD,log:addLog(r,"Done — "+wG.toFixed(0)+"g — "+fmtAUD(costAUD))});});
     setRequests(updated);await saveReqs(updated);syncSel(updated);
     sendReadyEmail(req,admin,adminNote);setAdminNote("");
+    showToast("✓ Marked as done","#22c55e");
   }
 
   async function reorder(id,dir){
@@ -3969,12 +3986,12 @@ async function scrapeModelUrl(url) {
             <button className="bh" onClick={function(){setJobMode(null);setLaserStep(0);}} style={{ background:"transparent", color:"#64748b", border:"1px solid #111827", borderRadius:7, padding:"6px 14px", fontFamily:"'DM Mono',monospace", fontSize:10, cursor:"pointer" }}>← Back</button>
             <div style={{ fontSize:11, color:"#64748b" }}>New Request / Laser Cut</div>
           </div>
-          <LaserWizard form={lform} setForm={setLform} step={laserStep} setStep={setLaserStep} submitted={laserSubmitted} confetti={laserConfetti} laserFile={laserFile} setLaserFile={setLaserFile} lfileRef={lfileRef} onSubmit={handleLaserSubmit} requests={requests} setFileData={setLaserFileData} setDims={setSvgDims} fileData={laserFileData} dims={svgDims}/>
+          <LaserWizard form={lform} setForm={setLform} step={laserStep} setStep={setLaserStep} submitted={laserSubmitted} confetti={laserConfetti} laserFile={laserFile} setLaserFile={setLaserFile} lfileRef={lfileRef} onSubmit={handleLaserSubmit} requests={requests} setFileData={setLaserFileData} setDims={setSvgDims} fileData={laserFileData} dims={svgDims} onReset={resetLaserForm}/>
         </div>}
-        {jobMode==="laser"&&laserSubmitted&&<LaserWizard form={lform} setForm={setLform} step={laserStep} setStep={setLaserStep} submitted={laserSubmitted} confetti={laserConfetti} laserFile={laserFile} setLaserFile={setLaserFile} lfileRef={lfileRef} onSubmit={handleLaserSubmit} requests={requests} setFileData={setLaserFileData} setDims={setSvgDims} fileData={laserFileData} dims={svgDims}/>}
+        {jobMode==="laser"&&laserSubmitted&&<LaserWizard form={lform} setForm={setLform} step={laserStep} setStep={setLaserStep} submitted={laserSubmitted} confetti={laserConfetti} laserFile={laserFile} setLaserFile={setLaserFile} lfileRef={lfileRef} onSubmit={handleLaserSubmit} requests={requests} setFileData={setLaserFileData} setDims={setSvgDims} fileData={laserFileData} dims={svgDims} onReset={resetLaserForm}/>}
 
         {/* ── 3D Print wizard ── */}
-        {jobMode==="print"&&(submitted?<div style={{ textAlign:"center", padding:"80px 0" }}>
+        {jobMode==="print"&&(submitted?<div style={{ textAlign:"center", padding:"60px 0" }}>
           <div className="ci" style={{ fontSize:80, marginBottom:16 }}>🎉</div>
           <div style={{ fontFamily:"'Syne',sans-serif", fontSize:28, fontWeight:900, color:"#22c55e" }}>You're all set!</div>
           <div style={{ color:"#64748b", marginTop:10, fontSize:14, lineHeight:1.8 }}>Your print request is in the queue.<br/>You'll get an email when printing starts.</div>
@@ -3983,6 +4000,7 @@ async function scrapeModelUrl(url) {
             <div style={{ fontFamily:"'Syne',sans-serif", fontSize:16, fontWeight:800, color:"#f97316" }}>{formatReadyDate(submittedReadyDate)}</div>
             <div style={{ fontSize:10, color:"#64748b", marginTop:3 }}>Based on current queue — may change</div>
           </div>}
+          <button onClick={resetPrintForm} className="bh" style={{ marginTop:28, background:"rgba(249,115,22,0.1)", color:"#f97316", border:"1px solid rgba(249,115,22,0.3)", borderRadius:10, padding:"12px 28px", fontFamily:"inherit", fontSize:13, cursor:"pointer", fontWeight:500 }}>Submit another request</button>
         </div>:
         <div style={{ maxWidth:720, margin:"0 auto" }}>
           <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:20 }}>
@@ -4005,6 +4023,10 @@ async function scrapeModelUrl(url) {
               <button onClick={function(){setShowTemplates(true);}} className="bh" style={{ background:"rgba(168,85,247,0.1)", color:"#a855f7", border:"1px solid rgba(168,85,247,0.3)", borderRadius:7, padding:"6px 14px", fontFamily:"'DM Mono',monospace", fontSize:10, cursor:"pointer", letterSpacing:"0.06em" }}>📋 Use Saved Template</button>
             </div>
             <Card title="Your details">
+              {(function(){var saved=null;try{saved=JSON.parse(localStorage.getItem(UK)||"null");}catch(e){}return saved&&saved.teacherName?<div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", background:"rgba(20,184,166,0.08)", border:"1px solid rgba(20,184,166,0.25)", borderRadius:8, padding:"8px 12px", marginBottom:8 }}>
+                <div style={{ fontSize:12, color:"#2dd4bf" }}>Welcome back, {saved.teacherName}</div>
+                <button onClick={function(){try{localStorage.removeItem(UK);}catch(e){}setForm(function(f){return Object.assign({},f,{teacherName:"",email:"",department:""});});}} style={{ background:"none", border:"none", color:"#475569", fontSize:11, cursor:"pointer", fontFamily:"inherit" }}>Not you? Clear</button>
+              </div>:null;})()}
               <div className="g2s">
                 <div><Lbl>Your name</Lbl><input value={form.teacherName} placeholder="e.g. Ms. Johnson" onChange={function(e){setForm(function(f){return Object.assign({},f,{teacherName:e.target.value});});}} style={baseInput}/></div>
                 <div><Lbl>School email</Lbl><input value={form.email} placeholder="you@macc.nsw.edu.au" onChange={function(e){setForm(function(f){return Object.assign({},f,{email:e.target.value});});}} style={baseInput}/><div style={{ fontSize:10, color:"#64748b", marginTop:4 }}>We'll email you when your print is ready</div></div>
@@ -4166,7 +4188,7 @@ async function scrapeModelUrl(url) {
               </div>
             </div>}
 
-            <NavBtns onNext={function(){setStep(1);}} disabled={!form.teacherName||!form.email||!stlFile||parsing} label="Continue to print options"/>
+            <NavBtns onNext={function(){setStep(1);}} disabled={!form.teacherName||!form.email||!stlFile||parsing} label="Continue to print options" hint={[!form.teacherName&&"Your name",!form.email&&"Email",!stlFile&&"3D file",parsing&&"File still loading"].filter(Boolean).join(", ")}/>
           </div>}
 
           {/* Step 1 */}
@@ -4213,7 +4235,7 @@ async function scrapeModelUrl(url) {
             <Card title="Any special instructions?">
               <textarea value={form.notes} rows={3} placeholder="e.g. needs to be strong, fragile parts, specific finish..." onChange={function(e){setForm(function(f){return Object.assign({},f,{notes:e.target.value});});}} style={Object.assign({},baseInput,{resize:"vertical",lineHeight:1.7})}/>
             </Card>
-            <NavBtns onBack={function(){setStep(0);}} onNext={function(){setStep(2);}} disabled={!form.projectName||!form.dueDate||!form.color} label="Review my request"/>
+            <NavBtns onBack={function(){setStep(0);}} onNext={function(){setStep(2);}} disabled={!form.projectName||!form.dueDate||!form.color} label="Review my request" hint={[!form.projectName&&"Project name",!form.dueDate&&"Date needed by",!form.color&&"Filament colour"].filter(Boolean).join(", ")}/>
           </div>}
 
           {/* Step 2 — Review */}
@@ -4235,7 +4257,7 @@ async function scrapeModelUrl(url) {
               </div>}
             </Card>
             <div style={{ background:"rgba(34,197,94,0.06)", border:"1px solid rgba(34,197,94,0.2)", borderRadius:8, padding:"10px 14px", fontSize:11, color:"#22c55e" }}>
-              ✉ After submitting, your email client will open with a confirmation message to send yourself.
+              {_ejs.pub?"✉ A confirmation email will be sent to you automatically.":"✉ After submitting, your email client will open with a confirmation message to send yourself."}
             </div>
             <div style={{ display:"flex", alignItems:"center", gap:10, background:"rgba(168,85,247,0.06)", border:"1px solid rgba(168,85,247,0.15)", borderRadius:8, padding:"10px 14px", cursor:"pointer" }} onClick={function(){setSaveAsTpl(function(v){return !v;});  }}>
               <input type="checkbox" checked={saveAsTpl} onChange={function(){}} style={{ width:15, height:15, accentColor:"#a855f7", cursor:"pointer", flexShrink:0 }}/>
@@ -4284,7 +4306,7 @@ async function scrapeModelUrl(url) {
               <div style={{ fontSize:12, color:"#60a5fa", flex:1 }}>{selCount} job{selCount!==1?"s":""} selected</div>
               <button onClick={batchApprove} className="bh" style={{ background:"#16a34a", color:"#fff", border:"none", borderRadius:6, padding:"5px 12px", fontFamily:"inherit", fontSize:11, cursor:"pointer" }}>Approve All</button>
               <button onClick={batchCancel} className="bh" style={{ background:"rgba(245,158,11,0.12)", color:"#f59e0b", border:"1px solid rgba(245,158,11,0.3)", borderRadius:6, padding:"5px 12px", fontFamily:"inherit", fontSize:11, cursor:"pointer" }}>Cancel All</button>
-              <button onClick={batchDelete} className="bh" style={{ background:"rgba(239,68,68,0.1)", color:"#ef4444", border:"1px solid rgba(239,68,68,0.3)", borderRadius:6, padding:"5px 12px", fontFamily:"inherit", fontSize:11, cursor:"pointer" }}>Delete All</button>
+              <button onClick={function(){setConfirmDeleteId("batch");}} className="bh" style={{ background:"rgba(239,68,68,0.1)", color:"#ef4444", border:"1px solid rgba(239,68,68,0.3)", borderRadius:6, padding:"5px 12px", fontFamily:"inherit", fontSize:11, cursor:"pointer" }}>Delete All</button>
               <button onClick={function(){setSelected({});}} style={{ background:"none", border:"none", color:"#64748b", cursor:"pointer", fontSize:14 }}>×</button>
             </div>}
             {!isMobile&&<div className="qhead" style={{ borderBottom:"1px solid #334155" }}>
@@ -4495,12 +4517,23 @@ async function scrapeModelUrl(url) {
                     {STATUSES.map(function(s){var active=selReq.status===s;return <button key={s} className="bh" onClick={function(){updateStatus(selReq.id,s);}} style={{ background:active?SC[s]:"transparent", color:active?"#fff":SC[s], border:"1px solid "+SC[s], borderRadius:5, padding:"4px 10px", fontFamily:"inherit", fontSize:9, cursor:"pointer", letterSpacing:"0.07em", textTransform:"uppercase" }}>{s}</button>;})}
                   </div>
                 </div>
-                <button className="bh" onClick={function(){deleteReq(selReq.id);}} style={{ background:"rgba(239,68,68,0.06)", color:"#ef4444", border:"1px solid rgba(239,68,68,0.2)", borderRadius:7, padding:"8px 0", fontFamily:"inherit", fontSize:9, cursor:"pointer", letterSpacing:"0.08em", textTransform:"uppercase" }}>Delete Request</button>
+                <button className="bh" onClick={function(){setConfirmDeleteId(selReq.id);}} style={{ background:"rgba(239,68,68,0.06)", color:"#ef4444", border:"1px solid rgba(239,68,68,0.2)", borderRadius:7, padding:"8px 0", fontFamily:"inherit", fontSize:9, cursor:"pointer", letterSpacing:"0.08em", textTransform:"uppercase" }}>Delete Request</button>
               </div>
             </div>
           </div>}
         </div>}
       </div>}
     </div>
+    {toast&&<div style={{ position:"fixed", bottom:24, right:24, background:toast.color, color:"#fff", borderRadius:10, padding:"12px 20px", fontSize:13, fontWeight:500, zIndex:9999, boxShadow:"0 4px 20px rgba(0,0,0,0.4)", pointerEvents:"none" }}>{toast.msg}</div>}
+    {confirmDeleteId&&<div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.7)", zIndex:9000, display:"flex", alignItems:"center", justifyContent:"center" }} onClick={function(){setConfirmDeleteId(null);}}>
+      <div style={{ background:"#1e293b", borderRadius:14, padding:28, width:320, border:"1px solid #334155" }} onClick={function(e){e.stopPropagation();}}>
+        <div style={{ fontSize:16, fontWeight:600, marginBottom:8 }}>{confirmDeleteId==="batch"?"Delete selected jobs?":"Delete this job?"}</div>
+        <div style={{ fontSize:12, color:"#64748b", marginBottom:20 }}>This cannot be undone.</div>
+        <div style={{ display:"flex", gap:10 }}>
+          <button onClick={function(){setConfirmDeleteId(null);}} style={{ flex:1, background:"transparent", color:"#64748b", border:"1px solid #334155", borderRadius:8, padding:"11px 0", fontFamily:"inherit", fontSize:12, cursor:"pointer" }}>Cancel</button>
+          <button className="bh" onClick={function(){if(confirmDeleteId==="batch")batchDelete();else deleteReq(confirmDeleteId);setConfirmDeleteId(null);}} style={{ flex:1, background:"#ef4444", color:"#fff", border:"none", borderRadius:8, padding:"11px 0", fontFamily:"inherit", fontSize:12, cursor:"pointer" }}>Delete</button>
+        </div>
+      </div>
+    </div>}
   </div>;
 }
